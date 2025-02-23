@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto"
+	"time"
 
 	"github.com/go-acme/lego/v4/registration"
 	"github.com/rs/zerolog/log"
@@ -31,7 +32,17 @@ func (a *App) Renew() {
 
 	var fails []string
 
+	index := a.closet.GetIndex()
+
 	for _, domain := range a.config.Domains {
+		if _, ok := index.CertIndex[domain]; ok {
+			log.Info().Str("domain", domain).Msg("Certificate already obtained")
+			if index.CertIndex[domain].ExpirationDate.After(time.Now().AddDate(0, -2, 0)) { // TODO : Customize the expiration date check
+				log.Info().Str("domain", domain).Msg("Certificate still valid")
+				continue
+			}
+		}
+
 		cert, err := a.buckcert.RequestCert([]string{domain})
 		if err != nil {
 			log.Error().Err(err).Str("domain", domain).Msg("Failed to request certificate")
@@ -56,9 +67,15 @@ func (a *App) Renew() {
 
 	}
 
+	err := a.closet.SaveIndex()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to save index")
+	}
+
 	if len(fails) == 0 {
 		log.Info().Msg("All certificates obtained and stored")
 		return
 	}
+
 	log.Error().Strs("domains", fails).Msg("Failed to request certificates for theses domains")
 }

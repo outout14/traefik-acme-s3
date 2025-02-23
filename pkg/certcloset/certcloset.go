@@ -19,6 +19,7 @@ func (c *Config) Validate() error {
 }
 
 type CertCloset struct {
+	index  CertificateList
 	config Config
 	s3     *s3.Client
 }
@@ -47,5 +48,14 @@ func NewCertCloset(config Config) (*CertCloset, error) {
 	if err := cg.initS3(); err != nil {
 		return nil, err
 	}
+	err := cg.RetrieveIndex()
+	if err != nil {
+		return nil, err
+	}
+
 	return &cg, nil
+}
+
+func (c *CertCloset) GetIndex() CertificateList {
+	return c.index
 }
