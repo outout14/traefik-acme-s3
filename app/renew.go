@@ -1,40 +1,41 @@
 package app
 
 import (
-	"crypto"
 	"time"
 
-	"github.com/go-acme/lego/v4/registration"
 	"github.com/rs/zerolog/log"
 )
 
-type MyUser struct {
-	Email        string
-	Registration *registration.Resource
-	key          crypto.PrivateKey
-}
+func (a *App) Renew(cfg RenewConfig) {
+	// Initialize the required clients
+	a.initBuckcert(cfg.Buckcert)
 
-func (u *MyUser) GetEmail() string {
-	return u.Email
-}
-func (u MyUser) GetRegistration() *registration.Resource {
-	return u.Registration
-}
-func (u *MyUser) GetPrivateKey() crypto.PrivateKey {
-	return u.key
-}
+	if cfg.Traefik.Url != "" {
+		a.initTraefikClient(cfg.Traefik)
+		domains, err := a.traefikApi.GetDomains()
+		if err != nil {
+			log.Fatal().Err(err).Msg("unable to get domains from traefik")
+		}
 
-func (a *App) Renew() {
-	if len(a.config.Domains) == 0 {
+		cfg.Domains = append(cfg.Domains, domains...)
+	} else {
+		log.Warn().Msg("No traefik API URL provided. Skipping traefik client initialization")
+	}
+
+	if len(cfg.Domains) == 0 {
 		log.Warn().Msg("No domains. Exiting")
 		return
 	}
 
+	a.renew(cfg)
+}
+
+func (a *App) renew(cfg RenewConfig) {
 	var fails []string
 
 	index := a.closet.GetIndex()
 
-	for _, domain := range a.config.Domains {
+	for _, domain := range cfg.Domains {
 		if _, ok := index.CertIndex[domain]; ok {
 			log.Info().Str("domain", domain).Msg("Certificate already obtained")
 			if index.CertIndex[domain].ExpirationDate.After(time.Now().AddDate(0, -2, 0)) { // TODO : Customize the expiration date check
@@ -54,11 +55,6 @@ func (a *App) Renew() {
 
 		err = a.closet.StoreCertificate(*cert)
 
-		/* err := a.closet.StoreCertificate(certificate.Resource{
-			Domain:      domain,
-			PrivateKey:  []byte("private key"),
-			Certificate: []byte("certificate"),
-		}) */
 		if err != nil {
 			log.Error().Err(err).Str("domain", domain).Msg("Failed to store certificate")
 			fails = append(fails, domain)

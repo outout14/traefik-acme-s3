@@ -6,29 +6,31 @@ import (
 )
 
 type RenewCmd struct {
-	// Force     bool `help:"Force removal."`
+	app.RenewConfig
 }
 
 func (r *RenewCmd) Run(ctx *app.Config) error {
 	app := app.App{}
 	app.Init(*ctx)
-	app.Renew()
+	app.Renew(r.RenewConfig)
 	return nil
 }
 
 type SyncCmd struct {
-	// Paths []string `arg:"" optional:"" name:"path" help:"Paths to list." type:"path"`
+	app.SyncConfig
 }
 
 func (s *SyncCmd) Run(ctx *app.Config) error {
-	return nil
+	app := app.App{}
+	app.Init(*ctx)
+	return app.Sync(s.SyncConfig)
 }
 
 var cli struct {
 	app.Config
 
-	Renew   RenewCmd `cmd:"" help:"Generate or renew certificates."`
-	Synchro SyncCmd  `cmd:"" help:"Synchronize the certificates."`
+	Renew RenewCmd `cmd:"" help:"Generate or renew certificates."`
+	Sync  SyncCmd  `cmd:"" help:"Synchronize the certificates."`
 }
 
 func main() {
