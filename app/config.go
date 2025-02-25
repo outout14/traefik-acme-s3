@@ -18,5 +18,10 @@ type RenewConfig struct {
 }
 
 type SyncConfig struct {
-	Traefik traefikclient.LocalConfig `embed:"" prefix:"traefik." help:"Traefik configuration."`
+	Traefik struct {
+		LocalStore     string `env:"TRAEFIK_LOCAL_STORE" required:"" help:"Where to store the certificates."`
+		ConfigFile     string `env:"TRAEFIK_OUTPUT_FILE" required:"" help:"The traefik configuration filename dynamically generated that will contains all the certificates definitions."`
+		Format         string `env:"TRAEFIK_OUTPUT_FORMAT" required:"" default:"toml" help:"The format to store the outputed configuration."`
+		CertificateDir string `env:"TRAEFIK_CERTIFICATE_DIR" required:"" help:"Where the certificates are stored relative to traefik."`
+	} `embed:"" prefix:"traefik." help:"Traefik configuration."`
 }

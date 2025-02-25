@@ -41,5 +41,7 @@ require (
 	github.com/go-acme/lego/v4 v4.22.2
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.3
 	golang.org/x/sys v0.28.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0
 )

@@ -7,11 +7,10 @@ import (
 )
 
 type App struct {
-	buckcert     *buckcert.Buckcert
-	closet       *certcloset.CertCloset
-	traefikApi   *traefikclient.ApiClient
-	traefikLocal *traefikclient.LocalClient
-	config       Config
+	buckcert   *buckcert.Buckcert
+	closet     *certcloset.CertCloset
+	traefikApi *traefikclient.ApiClient
+	config     Config
 }
 
 func (a *App) Init(config Config) {
