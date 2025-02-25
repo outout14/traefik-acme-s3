@@ -25,6 +25,19 @@ type CertificateEntry struct {
 	ExpirationDate time.Time `json:"expiration_date"`
 }
 
+func (cl *CertificateList) GetDiff(other CertificateList) []*CertificateEntry {
+	var diff []*CertificateEntry
+	for k, v := range cl.CertIndex {
+		if other.CertIndex[k].ExpirationDate != v.ExpirationDate {
+			diff = append(diff, &CertificateEntry{
+				Domain:         k,
+				ExpirationDate: v.ExpirationDate,
+			})
+		}
+	}
+	return diff
+}
+
 func (c *CertCloset) RetrieveIndex() error {
 	// Retrieve current index from S3
 	s3idx, err := c.s3.GetObject(context.TODO(), &s3.GetObjectInput{
@@ -73,10 +86,10 @@ func (c *CertCloset) SaveIndex() error {
 	return nil
 }
 
-func (c *CertCloset) UpdateIndex(cert CertificateEntry) {
-	c.index.CertIndex[cert.Domain] = cert
+func (c *CertificateList) Add(cert CertificateEntry) {
+	c.CertIndex[cert.Domain] = cert
 }
 
-func (c *CertCloset) RemoveIndex(domain string) {
-	delete(c.index.CertIndex, domain)
+func (c *CertificateList) Remove(domain string) {
+	delete(c.CertIndex, domain)
 }
