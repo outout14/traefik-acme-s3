@@ -12,7 +12,6 @@ type Config struct {
 	Email           string `env:"LETSENCRYPT_EMAIL" required:"" help:"Email to use for the Let's Encrypt account."`
 	CaURL           string `env:"LETSENCRYPT_CA_URL" required:"" default:"https://acme-staging-v02.api.letsencrypt.org/directory" help:"Let's Encrypt CA URL to use."`
 	KeyType         string `env:"LETSENCRYPT_KEY_TYPE" required:"" default:"P256" help:"Let's Encrypt key type to use."`
-	PushPrivateKey  bool   `env:"LETSENCRYPT_PUSH_PRIVATE_KEY" required:"" default:"true" help:"Push the private key to the S3 bucket."`
 	ChallengeBucket string `env:"LETSENCRYPT_BUCKET" required:"" help:"S3 bucket to use to store the challenges."`
 }
 

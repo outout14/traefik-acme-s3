@@ -26,7 +26,7 @@ func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 	return &cg, nil
 }
 
-func (c *LocalCertCloset) IntegrityCheck() []*CertificateEntry {
+func (c *LocalCertCloset) CheckIntegrity() []*CertificateEntry {
 	// Returns the failed integrity check
 	var failed []*CertificateEntry
 
@@ -37,22 +37,6 @@ func (c *LocalCertCloset) IntegrityCheck() []*CertificateEntry {
 	}
 
 	return failed
-}
-
-func (c *LocalCertCloset) writeIdx() error {
-	// Store on disk (locally) the index
-	fPath := c.path + "/" + CerticateIndexFile
-
-	idx, err := json.Marshal(c.index)
-	if err != nil {
-		return err
-	}
-
-	err = os.WriteFile(fPath, []byte(idx), 0644)
-	if err != nil {
-		return fmt.Errorf("unable to write index on disk: %w", err)
-	}
-	return nil
 }
 
 func (c *LocalCertCloset) retrieveIdx() error {
@@ -71,4 +55,23 @@ func (c *LocalCertCloset) retrieveIdx() error {
 
 func (c *LocalCertCloset) GetIndex() CertificateList {
 	return c.index
+}
+
+func (c *LocalCertCloset) SetIndex(idx CertificateList) {
+	c.index = idx
+}
+
+func (c *LocalCertCloset) SaveIndex() error {
+	fPath := c.path + "/" + CerticateIndexFile
+
+	idx, err := json.Marshal(c.index)
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(fPath, []byte(idx), 0644)
+	if err != nil {
+		return fmt.Errorf("unable to write index on disk: %w", err)
+	}
+	return nil
 }

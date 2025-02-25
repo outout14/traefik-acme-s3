@@ -33,6 +33,8 @@ func (a *App) Renew(cfg RenewConfig) {
 func (a *App) renew(cfg RenewConfig) {
 	var fails []string
 
+	done := 0
+
 	index := a.closet.GetIndex()
 
 	for _, domain := range cfg.Domains {
@@ -60,7 +62,12 @@ func (a *App) renew(cfg RenewConfig) {
 			fails = append(fails, domain)
 			continue
 		}
+		done++
+	}
 
+	if done == 0 {
+		log.Info().Msg("No certificates to renew")
+		return
 	}
 
 	err := a.closet.SaveIndex()

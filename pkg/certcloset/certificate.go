@@ -1,6 +1,8 @@
 package certcloset
 
 import (
+	"fmt"
+
 	"github.com/go-acme/lego/v4/certificate"
 )
 
@@ -8,7 +10,7 @@ import (
 type Certificate struct {
 	Certificate []byte `json:"cert"`
 	PrivateKey  []byte `json:"privkey"`
-	Domain      string `json:"-"`
+	Domain      string `json:"-"` // WARN : the domain is not stored in the JSON
 }
 
 func serializeCert(cert certificate.Resource) *Certificate {
@@ -18,4 +20,14 @@ func serializeCert(cert certificate.Resource) *Certificate {
 		PrivateKey:  cert.PrivateKey,
 		Domain:      cert.Domain,
 	}
+}
+
+func (c *Certificate) Validate() error {
+	if c.Domain == "" {
+		return fmt.Errorf("missing domain")
+	}
+	if len(c.Certificate) == 0 {
+		return fmt.Errorf("missing certificate")
+	}
+	return nil
 }

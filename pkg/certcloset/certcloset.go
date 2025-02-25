@@ -1,7 +1,9 @@
 package certcloset
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -11,7 +13,7 @@ import (
 type Config struct {
 	Password       string `env:"CLOSET_PASSWORD" required:"" help:"Password to encrypt the certificates ([priv/pub]keys)."`
 	Bucket         string `env:"CLOSET_BUCKET" required:"" help:"S3 bucket to use to store the certificates."`
-	PushPrivateKey bool   `env:"PUSH_PRIVATE_KEY" default:"false" help:"Push the private key to the closet."`
+	PushPrivateKey bool   `env:"PUSH_PRIVATE_KEY" default:"true" help:"Push the private key to the closet."`
 }
 
 func (c *Config) Validate() error {
@@ -48,7 +50,7 @@ func NewCertCloset(config Config) (*CertCloset, error) {
 	if err := cg.initS3(); err != nil {
 		return nil, err
 	}
-	err := cg.RetrieveIndex()
+	err := cg.retrieveIndex()
 	if err != nil {
 		return nil, err
 	}
@@ -58,4 +60,23 @@ func NewCertCloset(config Config) (*CertCloset, error) {
 
 func (c *CertCloset) GetIndex() CertificateList {
 	return c.index
+}
+
+func (c *CertCloset) SaveIndex() error {
+	// Save the index to S3
+	idx, err := json.Marshal(c.index)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    &CerticateIndexFile,
+		Body:   bytes.NewReader(idx),
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

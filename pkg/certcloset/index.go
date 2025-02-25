@@ -1,7 +1,6 @@
 package certcloset
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,7 +24,7 @@ type CertificateEntry struct {
 	ExpirationDate time.Time `json:"expiration_date"`
 }
 
-func (cl *CertificateList) GetDiff(other CertificateList) []*CertificateEntry {
+func (cl CertificateList) GetDiff(other CertificateList) []*CertificateEntry {
 	var diff []*CertificateEntry
 	for k, v := range cl.CertIndex {
 		if other.CertIndex[k].ExpirationDate != v.ExpirationDate {
@@ -38,8 +37,8 @@ func (cl *CertificateList) GetDiff(other CertificateList) []*CertificateEntry {
 	return diff
 }
 
-func (c *CertCloset) RetrieveIndex() error {
-	// Retrieve current index from S3
+func (c *CertCloset) retrieveIndex() error {
+	// Retrieve AND LOAD current index from S3
 	s3idx, err := c.s3.GetObject(context.TODO(), &s3.GetObjectInput{
 		Bucket: &c.config.Bucket,
 		Key:    &CerticateIndexFile,
@@ -60,25 +59,6 @@ func (c *CertCloset) RetrieveIndex() error {
 
 	// Decode the index
 	err = json.NewDecoder(s3idx.Body).Decode(&c.index)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *CertCloset) SaveIndex() error {
-	// Save the index to S3
-	idx, err := json.Marshal(c.index)
-	if err != nil {
-		return err
-	}
-
-	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: &c.config.Bucket,
-		Key:    &CerticateIndexFile,
-		Body:   bytes.NewReader(idx),
-	})
 	if err != nil {
 		return err
 	}
