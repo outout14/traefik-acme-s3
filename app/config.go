@@ -7,7 +7,7 @@ import (
 )
 
 type Config struct {
-	Debug  bool              `help:"Enable debug mode." env:"DEBUG"`
+	Debug  bool              `help:"Enable debug mode." env:"DEBUG" default:"false"`
 	Closet certcloset.Config `embed:"" prefix:"closet."`
 }
 
