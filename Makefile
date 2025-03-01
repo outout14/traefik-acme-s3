@@ -3,6 +3,7 @@ DIST_DIR ?= dist/
 GOOS ?= linux
 ARCH ?= $(shell uname -m)
 BUILDINFOSDET ?= 
+IMAGE ?= tracs3:latest
 
 SOFT_NAME    := trac3
 SOFT_VERSION := $(shell git describe --tags $(git rev-list --tags --max-count=1))
@@ -36,24 +37,19 @@ build: prepare
 run: build 
 	$(OUTPUT_SOFT) $(ARGS)
 
-.PHONY: package-deb
-package-deb: prepare
-	fpm -s dir -t deb -n $(SOFT_NAME) -v $(VERSION_PKG) \
-        --description "$(DESCRIPTION)"  \
-        --url "$(URL)" \
-        --architecture $(ARCH) \
-        --license "$(LICENSE)" \
-        --package $(DIST_DIR) \
-        $(OUTPUT_SOFT)=/usr/bin/trac3-dns \
-		extra/config.ini.example=/etc/trac3/config-dns.ini
+.PHONY: docker-build
+docker-build:
+	@docker buildx create --use --name=crossplat --node=crossplat && \
+	docker buildx build \
+		--output "type=docker,push=false" \
+		--tag $(IMAGE) \
+		.
 
-.PHONY: package-rpm
-package-rpm: prepare
-	fpm -s dir -t rpm -n $(SOFT_NAME) -v $(VERSION_PKG) \
-	--description "$(DESCRIPTION)" \
-	--url "$(URL)" \
-	--architecture $(ARCH) \
-	--license "$(LICENSE) "\
-	--package $(DIST_DIR) \
-	$(OUTPUT_SOFT)=/usr/bin/trac3-dns \
-	extra/config.ini.example=/etc/trac3/config-dns.ini
+.PHONY: docker-publish
+docker-publish:
+	@docker buildx create --use --name=crossplat --node=crossplat && \
+	docker buildx build \
+		--platform linux/386,linux/amd64,linux/arm/v7,linux/arm64 \
+		--output "type=image,push=true" \
+		--tag $(IMAGE) \
+		.
