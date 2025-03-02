@@ -15,6 +15,13 @@ func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 	cg := LocalCertCloset{
 		path: path,
 	}
+
+	if _, err := os.Stat(path + "/" + CerticateIndexFile); os.IsNotExist(err) {
+		if err := cg.SaveIndex(); err != nil {
+			return nil, fmt.Errorf("unable to create new index file: %w", err)
+		}
+	}
+
 	if err := cg.retrieveIdx(); err != nil {
 		return nil, err
 	}
