@@ -15,7 +15,7 @@ func (c *Buckcert) RequestCert(domains []string) (*certificate.Resource, error) 
 
 	request := certificate.ObtainRequest{
 		Domains: domains,
-		Bundle:  false,
+		Bundle:  true,
 	}
 
 	certificates, err := c.client.Certificate.Obtain(request)
