@@ -12,9 +12,10 @@ type Config struct {
 }
 
 type RenewConfig struct {
-	Buckcert buckcert.Config         `embed:"" prefix:"letsencrypt."`
-	Domains  []string                `env:"DOMAINS" help:"List of domains to manage. Will be appended with traefik and redis domains."`
-	Traefik  traefikclient.ApiConfig `embed:"" prefix:"traefik." help:"Traefik configuration."`
+	Buckcert       buckcert.Config         `embed:"" prefix:"letsencrypt."`
+	Domains        []string                `env:"DOMAINS" help:"List of domains to manage. Will be appended with traefik and redis domains."`
+	IgnoredDomains []string                `env:"IGNORED_DOMAINS" help:"List of ignored domains."`
+	Traefik        traefikclient.ApiConfig `embed:"" prefix:"traefik." help:"Traefik configuration."`
 }
 
 type SyncConfig struct {

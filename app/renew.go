@@ -12,6 +12,7 @@ func (a *App) Renew(cfg RenewConfig) {
 
 	if cfg.Traefik.Url != "" {
 		a.initTraefikClient(cfg.Traefik)
+
 		domains, err := a.traefikApi.GetDomains()
 		if err != nil {
 			log.Fatal().Err(err).Msg("unable to get domains from traefik")
@@ -20,6 +21,23 @@ func (a *App) Renew(cfg RenewConfig) {
 		cfg.Domains = append(cfg.Domains, domains...)
 	} else {
 		log.Warn().Msg("No traefik API URL provided. Skipping traefik client initialization")
+	}
+
+	ignored := make(map[string]struct{}, len(cfg.IgnoredDomains))
+	for _, domain := range cfg.IgnoredDomains {
+		ignored[domain] = struct{}{}
+	}
+
+	unique := make(map[string]struct{})
+	for _, domain := range cfg.Domains {
+		if _, isIgnored := ignored[domain]; !isIgnored {
+			unique[domain] = struct{}{}
+		}
+	}
+
+	cfg.Domains = make([]string, 0, len(unique))
+	for domain := range unique {
+		cfg.Domains = append(cfg.Domains, domain)
 	}
 
 	if len(cfg.Domains) == 0 {
