@@ -11,12 +11,13 @@ import (
 )
 
 type Config struct {
-	Password       string `env:"CLOSET_PASSWORD" required:"" help:"Password to encrypt the certificates ([priv/pub]keys)."`
-	Bucket         string `env:"CLOSET_BUCKET" required:"" help:"S3 bucket to use to store the certificates."`
-	PushPrivateKey bool   `env:"PUSH_PRIVATE_KEY" default:"true" help:"Push the private key to the closet."`
+	Password       string `env:"CLOSET_PASSWORD" required:"" help:"Password used to encrypt stored certificates."`
+	Bucket         string `env:"CLOSET_BUCKET" required:"" help:"S3 bucket used for storing certificates and metadata."`
+	PushPrivateKey bool   `env:"PUSH_PRIVATE_KEY" default:"true" help:"Whether the private key should also be stored."`
 }
 
 func (c *Config) Validate() error {
+	// Add validation rules if needed, currently always valid
 	return nil
 }
 
@@ -26,56 +27,65 @@ type CertCloset struct {
 	s3     *s3.Client
 }
 
-func (g *CertCloset) initS3() error {
-	// Create a new S3 client
-	cfg, err := config.LoadDefaultConfig(context.TODO())
+// initS3 initializes the AWS S3 client and validates bucket access.
+func (c *CertCloset) initS3() error {
+	ctx := context.TODO()
+
+	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to load AWS SDK config: %w", err)
 	}
-	g.s3 = s3.NewFromConfig(cfg)
 
-	_, err = g.s3.HeadBucket(context.TODO(), &s3.HeadBucketInput{
-		Bucket: &g.config.Bucket,
+	c.s3 = s3.NewFromConfig(cfg)
+
+	// Validate bucket existence + permission
+	_, err = c.s3.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: &c.config.Bucket,
 	})
 	if err != nil {
-		return fmt.Errorf("unable to access S3 bucket: %w", err)
+		return fmt.Errorf("unable to access S3 bucket %q: %w", c.config.Bucket, err)
 	}
+
 	return nil
 }
 
-func NewCertCloset(config Config) (*CertCloset, error) {
-	cg := CertCloset{
-		config: config,
+func NewCertCloset(cfg Config) (*CertCloset, error) {
+	c := &CertCloset{
+		config: cfg,
 	}
-	if err := cg.initS3(); err != nil {
-		return nil, err
-	}
-	err := cg.retrieveIndex()
-	if err != nil {
+
+	if err := c.initS3(); err != nil {
 		return nil, err
 	}
 
-	return &cg, nil
+	if err := c.retrieveIndex(); err != nil {
+		return nil, fmt.Errorf("failed to load certificate index: %w", err)
+	}
+
+	return c, nil
 }
 
-func (c *CertCloset) GetIndex() CertificateList {
-	return c.index
+// GetIndex returns the internal index safely.
+// Returning a pointer avoids accidental copies and keeps behavior consistent.
+func (c *CertCloset) GetIndex() *CertificateList {
+	return &c.index
 }
 
+// SaveIndex persists the index to S3 (certificate metadata JSON).
 func (c *CertCloset) SaveIndex() error {
-	// Save the index to S3
-	idx, err := json.Marshal(c.index)
+	data, err := json.Marshal(c.index)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal index JSON: %w", err)
 	}
 
 	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket: &c.config.Bucket,
-		Key:    &CerticateIndexFile,
-		Body:   bytes.NewReader(idx),
+		Key:    &CerticateIndexFile, // keep original constant if defined elsewhere
+		Body:   bytes.NewReader(data),
 	})
+
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to upload index to S3: %w", err)
 	}
 
 	return nil

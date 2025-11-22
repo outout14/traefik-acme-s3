@@ -30,73 +30,90 @@ func (a *App) Renew(cfg RenewConfig) {
 
 	unique := make(map[string]struct{})
 	for _, domain := range cfg.Domains {
-		if _, isIgnored := ignored[domain]; !isIgnored {
+		if _, skip := ignored[domain]; !skip {
 			unique[domain] = struct{}{}
 		}
 	}
 
-	cfg.Domains = make([]string, 0, len(unique))
+	// Produce final list
+	finalDomains := make([]string, 0, len(unique))
 	for domain := range unique {
-		cfg.Domains = append(cfg.Domains, domain)
+		finalDomains = append(finalDomains, domain)
 	}
 
-	if len(cfg.Domains) == 0 {
-		log.Warn().Msg("No domains. Exiting")
+	if len(finalDomains) == 0 {
+		log.Warn().Msg("No domains provided after filtering — exiting")
 		return
 	}
 
-	a.renew(cfg)
+	a.renew(finalDomains)
 }
 
-func (a *App) renew(cfg RenewConfig) {
-	var fails []string
-
-	done := 0
+func (a *App) renew(domains []string) {
+	var failed []string
+	renewed := 0
 
 	index := a.closet.GetIndex()
 
-	for _, domain := range cfg.Domains {
-		if _, ok := index.CertIndex[domain]; ok {
-			log.Info().Str("domain", domain).Msg("Certificate already obtained")
-			if index.CertIndex[domain].ExpirationDate.After(time.Now().AddDate(0, -2, 0)) { // TODO : Customize the expiration date check
-				log.Info().Str("domain", domain).Msg("Certificate still valid")
+	for _, domain := range domains {
+		entry, exists := index.CertIndex[domain]
+
+		if exists {
+			// renew 2 months before expiration
+			renewBefore := time.Now().AddDate(0, 2, 0)
+
+			if entry.ExpirationDate.After(renewBefore) {
+				log.Info().
+					Str("domain", domain).
+					Msg("Certificate already obtained and still valid")
 				continue
 			}
 		}
 
+		// Request new certificate
 		cert, err := a.buckcert.RequestCert([]string{domain})
 		if err != nil {
-			log.Error().Err(err).Str("domain", domain).Msg("Failed to request certificate")
-			fails = append(fails, domain)
+			log.Error().
+				Err(err).
+				Str("domain", domain).
+				Msg("Failed to request certificate")
+			failed = append(failed, domain)
 			continue
 		}
 
-		log.Info().Str("domain", domain).Msg("Certificate obtained")
+		log.Info().
+			Str("domain", domain).
+			Msg("Certificate successfully obtained")
 
-		err = a.closet.StoreCertificate(*cert)
-
-		if err != nil {
-			log.Error().Err(err).Str("domain", domain).Msg("Failed to store certificate")
-			fails = append(fails, domain)
+		// Store certificate
+		if err := a.closet.StoreCertificate(*cert); err != nil {
+			log.Error().
+				Err(err).
+				Str("domain", domain).
+				Msg("Failed to store certificate")
+			failed = append(failed, domain)
 			continue
 		}
-		done++
+
+		renewed++
 	}
 
-	if done == 0 {
-		log.Info().Msg("No certificates to renew")
+	if renewed == 0 {
+		log.Info().Msg("No certificates required renewal")
 		return
 	}
 
-	err := a.closet.SaveIndex()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to save index")
+	// Persist index
+	if err := a.closet.SaveIndex(); err != nil {
+		log.Error().Err(err).Msg("Failed to save certificate index")
 	}
 
-	if len(fails) == 0 {
-		log.Info().Msg("All certificates obtained and stored")
+	if len(failed) == 0 {
+		log.Info().Msg("All certificates obtained and stored successfully")
 		return
 	}
 
-	log.Error().Strs("domains", fails).Msg("Failed to request certificates for theses domains")
+	log.Error().
+		Strs("domains", failed).
+		Msg("Failed to request certificates for these domains")
 }
