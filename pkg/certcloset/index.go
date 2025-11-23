@@ -24,7 +24,7 @@ type CertificateEntry struct {
 	ExpirationDate time.Time `json:"expiration_date"`
 }
 
-func (cl CertificateList) GetDiff(other CertificateList) []*CertificateEntry {
+func (cl CertificateList) GetDiff(other *CertificateList) []*CertificateEntry {
 	var diff []*CertificateEntry
 	for k, v := range cl.CertIndex {
 		if other.CertIndex[k].ExpirationDate != v.ExpirationDate {

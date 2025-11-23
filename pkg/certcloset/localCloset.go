@@ -7,7 +7,7 @@ import (
 )
 
 type LocalCertCloset struct {
-	index CertificateList
+	index *CertificateList
 	path  string
 }
 
@@ -60,11 +60,11 @@ func (c *LocalCertCloset) retrieveIdx() error {
 	return nil
 }
 
-func (c *LocalCertCloset) GetIndex() CertificateList {
+func (c *LocalCertCloset) GetIndex() *CertificateList {
 	return c.index
 }
 
-func (c *LocalCertCloset) SetIndex(idx CertificateList) {
+func (c *LocalCertCloset) SetIndex(idx *CertificateList) {
 	c.index = idx
 }
 
