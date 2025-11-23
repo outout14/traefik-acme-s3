@@ -1,6 +1,7 @@
 package traefikclient
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ type ApiConfig struct {
 	Username string `env:"TRAEFIK_API_USERNAME" default:"" help:"Traefik API username to use to retrieve the domains."`
 	Password string `env:"TRAEFIK_API_PASSWORD" default:"" help:"Traefik API password to use to retrieve the domains."`
 	Timeout  int    `env:"TRAEFIK_API_TIMEOUT" default:"5" help:"Traefik API timeout in seconds."`
+	Insecure bool   `env:"TRAEFIK_API_INSECURE" default:"false" help:"Allow insecure certificates when communicating with the Traefik API."`
 }
 
 func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
@@ -30,8 +32,14 @@ func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
 	}
 
 	// Add the basic auth to the client
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cli.apiConfig.Insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	cli.httpClient = &http.Client{
-		Timeout: time.Duration(cli.apiConfig.Timeout) * time.Second,
+		Timeout:   time.Duration(cli.apiConfig.Timeout) * time.Second,
+		Transport: transport,
 	}
 
 	return &cli, nil
