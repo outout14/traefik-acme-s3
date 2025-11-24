@@ -21,6 +21,10 @@ type ApiConfig struct {
 	Insecure bool   `env:"TRAEFIK_API_INSECURE" default:"false" help:"Allow insecure certificates when communicating with the Traefik API."`
 }
 
+// NewTraefikApiClient creates and returns a configured ApiClient based
+// on the provided ApiConfig. It validates required fields, ensures the
+// base URL ends with a slash, configures TLS options when Insecure is
+// set, and returns a ready-to-use ApiClient or an error.
 func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
 	cli := ApiClient{apiConfig: config}
 
@@ -45,6 +49,9 @@ func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
 	return &cli, nil
 }
 
+// makeRequest performs an HTTP GET against the Traefik API using the
+// client's base URL and applies basic auth when configured. It returns
+// the HTTP response or an error.
 func (c *ApiClient) makeRequest(url string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s", c.apiConfig.Url, url), nil)
 	if err != nil {

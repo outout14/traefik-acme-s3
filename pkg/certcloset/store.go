@@ -11,6 +11,10 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 )
 
+// StoreCertificate serializes a certificate.Resource and stores it in
+// the configured S3 bucket. If PushPrivateKey is enabled the private
+// key is encrypted before storage. The function also updates the in-
+// memory index with the certificate's expiration date.
 func (c *CertCloset) StoreCertificate(cert certificate.Resource) error {
 	var err error
 
@@ -53,6 +57,9 @@ func (c *CertCloset) StoreCertificate(cert certificate.Resource) error {
 	return nil
 }
 
+// RetrieveCertificate fetches the certificate JSON from S3 for the
+// given domain, decodes it, optionally decrypts the private key and
+// returns a Certificate object or an error.
 func (c *CertCloset) RetrieveCertificate(domain string) (*Certificate, error) {
 	// Retrieve the certificate from the S3 bucket
 	s3cert, err := c.s3.GetObject(context.TODO(), &s3.GetObjectInput{

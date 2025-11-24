@@ -13,6 +13,9 @@ type Certificate struct {
 	Domain      string `json:"-"` // WARN : the domain is not stored in the JSON
 }
 
+// serializeCert converts a lego certificate.Resource into the
+// internal Certificate structure that is marshaled to JSON for
+// storage (note: the Domain field is kept but not stored in JSON).
 func serializeCert(cert certificate.Resource) *Certificate {
 	// Serialize the certificate to store in the S3 bucket
 	return &Certificate{
@@ -22,6 +25,9 @@ func serializeCert(cert certificate.Resource) *Certificate {
 	}
 }
 
+// Validate ensures the minimal fields of the Certificate are present
+// (domain and certificate bytes). It returns an error when validation
+// fails.
 func (c *Certificate) Validate() error {
 	if c.Domain == "" {
 		return fmt.Errorf("missing domain")

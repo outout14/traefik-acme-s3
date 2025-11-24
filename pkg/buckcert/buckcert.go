@@ -13,6 +13,7 @@ type Config struct {
 	CaURL           string `env:"LETSENCRYPT_CA_URL" required:"" default:"https://acme-staging-v02.api.letsencrypt.org/directory" help:"Let's Encrypt CA URL to use."`
 	KeyType         string `env:"LETSENCRYPT_KEY_TYPE" required:"" default:"P256" help:"Let's Encrypt key type to use."`
 	ChallengeBucket string `env:"LETSENCRYPT_BUCKET" required:"" help:"S3 bucket to use for HTTP-01 challenge files."`
+	UserKeyPath     string `env:"LETSENCRYPT_USER_KEY_PATH" required:"" default:"./le_user.json" help:"Path to store the Let's Encrypt user key and registration data."`
 }
 
 type Buckcert struct {
@@ -23,7 +24,7 @@ type Buckcert struct {
 }
 
 func NewBuckcert(cfg Config) (*Buckcert, error) {
-	user, err := CreateUser(cfg.Email)
+	user, err := CreateUser(cfg.Email, cfg.UserKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ACME user: %w", err)
 	}
@@ -67,6 +68,10 @@ func (b *Buckcert) initClient() error {
 }
 
 func (b *Buckcert) register() error {
+	if b.user.Registration != nil {
+		return nil
+	}
+
 	reg, err := b.client.Registration.Register(
 		registration.RegisterOptions{TermsOfServiceAgreed: true},
 	)
@@ -75,6 +80,11 @@ func (b *Buckcert) register() error {
 	}
 
 	b.user.Registration = reg
+
+	if err := SaveUser(b.user, b.config.UserKeyPath); err != nil {
+		return fmt.Errorf("failed to persist ACME user: %w", err)
+	}
+
 	return nil
 }
 

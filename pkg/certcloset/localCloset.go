@@ -11,6 +11,9 @@ type LocalCertCloset struct {
 	path  string
 }
 
+// NewLocalCertCloset constructs a LocalCertCloset pointing to the
+// provided filesystem `path`. It ensures the certificate index file
+// exists (creating it if necessary) and loads the index into memory.
 func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 	cg := LocalCertCloset{
 		path: path,
@@ -33,6 +36,9 @@ func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 	return &cg, nil
 }
 
+// CheckIntegrity inspects the local certificate files and returns a
+// slice of CertificateEntry for which the corresponding filesystem
+// entries are missing (failed integrity checks).
 func (c *LocalCertCloset) CheckIntegrity() []*CertificateEntry {
 	// Returns the failed integrity check
 	var failed []*CertificateEntry
@@ -46,6 +52,8 @@ func (c *LocalCertCloset) CheckIntegrity() []*CertificateEntry {
 	return failed
 }
 
+// retrieveIdx reads the index file from disk and unmarshals it into
+// the LocalCertCloset.index field.
 func (c *LocalCertCloset) retrieveIdx() error {
 	fPath := c.path + "/" + CerticateIndexFile
 	idx, err := os.ReadFile(fPath)
@@ -60,14 +68,20 @@ func (c *LocalCertCloset) retrieveIdx() error {
 	return nil
 }
 
+// GetIndex returns the in-memory CertificateList pointer held by the
+// LocalCertCloset.
 func (c *LocalCertCloset) GetIndex() *CertificateList {
 	return c.index
 }
 
+// SetIndex replaces the LocalCertCloset's in-memory index with the
+// provided CertificateList pointer.
 func (c *LocalCertCloset) SetIndex(idx *CertificateList) {
 	c.index = idx
 }
 
+// SaveIndex marshals the in-memory index and writes it to disk at the
+// configured path as the certificate index file.
 func (c *LocalCertCloset) SaveIndex() error {
 	fPath := c.path + "/" + CerticateIndexFile
 
