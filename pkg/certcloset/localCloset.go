@@ -66,6 +66,11 @@ func (c *LocalCertCloset) retrieveIdx() error {
 	if err != nil {
 		return fmt.Errorf("unable to unmarshal index: %w", err)
 	}
+	if c.index == nil {
+		c.index = &CertificateList{CertIndex: make(map[string]CertificateEntry)}
+	} else if c.index.CertIndex == nil {
+		c.index.CertIndex = make(map[string]CertificateEntry)
+	}
 	return nil
 }
 

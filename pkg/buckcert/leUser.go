@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/rs/zerolog/log"
 )
 
 type leUser struct {
@@ -29,7 +30,10 @@ func (u *leUser) GetRegistration() *registration.Resource {
 }
 
 func (u *leUser) GetPrivateKey() crypto.PrivateKey {
-	key, _ := certcrypto.ParsePEMPrivateKey(u.Key)
+	key, err := certcrypto.ParsePEMPrivateKey(u.Key)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to parse ACME user private key")
+	}
 	return key
 }
 
@@ -58,13 +62,12 @@ func LoadUser(path string) (*leUser, error) {
 // CreateUser creates an ACME user with a new private key.
 // The key type is configurable through your config (P256, P384, RSA2048, etc.)
 func CreateUser(email, path string) (*leUser, error) {
-	// Try loading existing user
-	fmt.Println("trying to load user from", path)
+	log.Debug().Str("path", path).Msg("trying to load ACME user")
 	if u, err := LoadUser(path); err == nil {
 		return u, nil
 	}
 
-	fmt.Println("no existing user found, creating a new one")
+	log.Info().Msg("no existing ACME user found, creating a new one")
 
 	// Otherwise create a new one
 	privateKey, err := generateKey(certcrypto.EC256)

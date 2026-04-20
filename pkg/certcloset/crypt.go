@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"io"
 
@@ -82,8 +83,15 @@ func decryptAES(key []byte, text []byte) ([]byte, error) {
 	return unpadPKCS7(text)
 }
 
+// deriveKey produces a 32-byte AES-256 key from the configured password
+// using SHA-256 so any password length is accepted.
+func (c *CertCloset) deriveKey() []byte {
+	h := sha256.Sum256([]byte(c.config.Password))
+	return h[:]
+}
+
 func (c *CertCloset) encryptPrivKey(cert certificate.Resource) ([]byte, error) {
-	encryptedPrivKey, err := encryptAES([]byte(c.config.Password), cert.PrivateKey)
+	encryptedPrivKey, err := encryptAES(c.deriveKey(), cert.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("unable to encrypt the private key: %w", err)
 	}
@@ -92,7 +100,7 @@ func (c *CertCloset) encryptPrivKey(cert certificate.Resource) ([]byte, error) {
 }
 
 func (c *CertCloset) decryptPrivKey(encryptedPrivKey []byte) ([]byte, error) {
-	privKey, err := decryptAES([]byte(c.config.Password), encryptedPrivKey)
+	privKey, err := decryptAES(c.deriveKey(), encryptedPrivKey)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decrypt the private key: %w", err)
 	}

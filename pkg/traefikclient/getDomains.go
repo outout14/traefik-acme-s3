@@ -3,6 +3,7 @@ package traefikclient
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 )
 
 func (c *ApiClient) GetDomains() ([]string, error) {
@@ -13,6 +14,10 @@ func (c *ApiClient) GetDomains() ([]string, error) {
 		return domains, fmt.Errorf("unable to make request to the Traefik API: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return domains, fmt.Errorf("Traefik API returned HTTP %d", resp.StatusCode)
+	}
 
 	var routers []TraefikRouter
 	if err := json.NewDecoder(resp.Body).Decode(&routers); err != nil {

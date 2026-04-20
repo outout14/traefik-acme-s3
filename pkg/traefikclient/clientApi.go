@@ -26,14 +26,12 @@ type ApiConfig struct {
 // base URL ends with a slash, configures TLS options when Insecure is
 // set, and returns a ready-to-use ApiClient or an error.
 func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
-	cli := ApiClient{apiConfig: config}
-
-	if cli.apiConfig.Url == "" {
+	if config.Url == "" {
 		return nil, fmt.Errorf("traefik API URL is required")
 	}
-	if !strings.HasSuffix(cli.apiConfig.Url, "/") {
-		config.Url += "/"
-	}
+	config.Url = strings.TrimRight(config.Url, "/")
+
+	cli := ApiClient{apiConfig: config}
 
 	// Add the basic auth to the client
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -53,7 +51,7 @@ func NewTraefikApiClient(config ApiConfig) (*ApiClient, error) {
 // client's base URL and applies basic auth when configured. It returns
 // the HTTP response or an error.
 func (c *ApiClient) makeRequest(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s", c.apiConfig.Url, url), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s", c.apiConfig.Url, strings.TrimLeft(url, "/")), nil)
 	if err != nil {
 		return nil, err
 	}
