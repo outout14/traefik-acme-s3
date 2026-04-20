@@ -16,7 +16,8 @@ type LocalCertCloset struct {
 // exists (creating it if necessary) and loads the index into memory.
 func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 	cg := LocalCertCloset{
-		path: path,
+		path:  path,
+		index: &CertificateList{CertIndex: make(map[string]CertificateEntry)},
 	}
 
 	if _, err := os.Stat(path + "/" + CerticateIndexFile); os.IsNotExist(err) {

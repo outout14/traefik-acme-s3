@@ -4,12 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-acme/lego/v4/certificate"
 )
+
+// IsErrNotFound returns true if the error indicates the S3 object does not exist (404).
+func IsErrNotFound(err error) bool {
+	var responseError *awshttp.ResponseError
+	return errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound
+}
 
 // StoreCertificate serializes a certificate.Resource and stores it in
 // the configured S3 bucket. If PushPrivateKey is enabled the private
@@ -90,4 +99,20 @@ func (c *CertCloset) RetrieveCertificate(domain string) (*Certificate, error) {
 	}
 
 	return &cert, nil
+}
+
+// CertificateExists returns true if the certificate object exists in S3 for the given domain.
+// Returns (false, nil) when the object is not found (404); (false, err) for other errors.
+func (c *CertCloset) CertificateExists(domain string) (bool, error) {
+	_, err := c.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    &domain,
+	})
+	if err != nil {
+		if IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }

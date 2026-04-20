@@ -55,7 +55,15 @@ func (a *App) syncCerts(cfg SyncConfig) error {
 		log.Info().Str("domain", crt.Domain).Msg("Syncing certificate")
 		cert, err := a.closet.RetrieveCertificate(crt.Domain)
 		if err != nil {
-			log.Error().Err(err).Str("domain", crt.Domain).Msg("Unable to retrieve certificate")
+			if certcloset.IsErrNotFound(err) {
+				log.Warn().Str("domain", crt.Domain).Msg("Certificate in index but missing in S3 — removing stale index entry")
+				a.closet.GetIndex().Remove(crt.Domain)
+				if saveErr := a.closet.SaveIndex(); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", crt.Domain).Msg("Failed to save index after removing stale entry")
+				}
+			} else {
+				log.Error().Err(err).Str("domain", crt.Domain).Msg("Unable to retrieve certificate")
+			}
 			continue
 		}
 
@@ -99,7 +107,7 @@ func (a *App) writeTraefikConfig(cfg SyncConfig) error {
 			return err
 		}
 	} else {
-		log.Fatal().Str("format", cfg.Traefik.Format).Msg("Unsupported format for traefik configuration")
+		log.Error().Str("format", cfg.Traefik.Format).Msg("Unsupported format for traefik configuration")
 		return fmt.Errorf("unsupported format for traefik configuration: %s", cfg.Traefik.Format)
 	}
 
