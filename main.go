@@ -10,9 +10,10 @@ type RenewCmd struct {
 }
 
 func (r *RenewCmd) Run(ctx *app.Config) error {
-	app := app.App{}
-	app.Init(*ctx)
-	app.Renew(r.RenewConfig)
+	a := app.App{}
+	a.Init(*ctx)
+	defer a.Close()
+	a.Renew(r.RenewConfig)
 	return nil
 }
 
@@ -21,9 +22,10 @@ type SyncCmd struct {
 }
 
 func (s *SyncCmd) Run(ctx *app.Config) error {
-	app := app.App{}
-	app.Init(*ctx)
-	return app.Sync(s.SyncConfig)
+	a := app.App{}
+	a.Init(*ctx)
+	defer a.Close()
+	return a.Sync(s.SyncConfig)
 }
 
 var cli struct {

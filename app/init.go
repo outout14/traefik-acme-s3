@@ -1,26 +1,45 @@
 package app
 
 import (
+	"io"
 	"os"
 
 	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
+	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 func (a *App) initLog() {
-	// Configure timestamp + console formatting
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Enable debug if needed
+	var writers []io.Writer
+
 	if a.config.Debug {
+		writers = append(writers, zerolog.ConsoleWriter{Out: os.Stderr})
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-		log.Debug().Msg("Debug mode enabled")
 	} else {
+		writers = append(writers, os.Stderr)
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+
+	if a.config.LokiURL != "" {
+		lw := lokiwriter.New(a.config.LokiURL, map[string]string{
+			"app": a.config.LokiApp,
+		})
+		a.lokiWriter = lw
+		writers = append(writers, lw)
+	}
+
+	log.Logger = zerolog.New(zerolog.MultiLevelWriter(writers...)).With().Timestamp().Logger()
+
+	if a.config.Debug {
+		log.Debug().Msg("debug mode enabled")
+	}
+	if a.config.LokiURL != "" {
+		log.Debug().Str("url", a.config.LokiURL).Msg("Loki writer active")
 	}
 }
 

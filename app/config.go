@@ -7,8 +7,10 @@ import (
 )
 
 type Config struct {
-	Debug  bool              `help:"Enable debug mode." env:"DEBUG" default:"false"`
-	Closet certcloset.Config `embed:"" prefix:"closet."`
+	Debug    bool              `help:"Enable debug mode." env:"DEBUG" default:"false"`
+	LokiURL  string            `help:"Loki push URL (e.g. http://loki:3100). Disabled if empty." env:"LOKI_URL" default:""`
+	LokiApp  string            `help:"Value for the 'app' label sent to Loki." env:"LOKI_APP" default:"tas3"`
+	Closet   certcloset.Config `embed:"" prefix:"closet."`
 }
 
 type RenewConfig struct {

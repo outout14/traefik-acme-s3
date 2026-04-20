@@ -119,7 +119,8 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			log.Error().
 				Err(err).
 				Str("domain", domain).
-				Msg("Failed to request certificate")
+				Str("event", "cert_request_failed").
+				Msg("failed to request certificate")
 			a.recordFailure(state, domain)
 			_ = a.saveFailureState(cfg.StateDir, state)
 			failed = append(failed, domain)
@@ -129,14 +130,16 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 
 		log.Info().
 			Str("domain", domain).
-			Msg("Certificate successfully obtained")
+			Str("event", "cert_obtained").
+			Msg("certificate successfully obtained")
 
 		// Store certificate
 		if err := a.closet.StoreCertificate(*cert); err != nil {
 			log.Error().
 				Err(err).
 				Str("domain", domain).
-				Msg("Failed to store certificate")
+				Str("event", "cert_store_failed").
+				Msg("failed to store certificate")
 			a.recordFailure(state, domain)
 			_ = a.saveFailureState(cfg.StateDir, state)
 			failed = append(failed, domain)
