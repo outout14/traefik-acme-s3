@@ -2,6 +2,7 @@ package buckcert
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/lego"
@@ -9,11 +10,12 @@ import (
 )
 
 type Config struct {
-	Email           string `env:"LETSENCRYPT_EMAIL" required:"" help:"Email to use for the Let's Encrypt account."`
-	CaURL           string `env:"LETSENCRYPT_CA_URL" required:"" default:"https://acme-staging-v02.api.letsencrypt.org/directory" help:"Let's Encrypt CA URL to use."`
-	KeyType         string `env:"LETSENCRYPT_KEY_TYPE" required:"" default:"P256" help:"Let's Encrypt key type to use."`
-	ChallengeBucket string `env:"LETSENCRYPT_BUCKET" required:"" help:"S3 bucket to use for HTTP-01 challenge files."`
-	UserKeyPath     string `env:"LETSENCRYPT_USER_KEY_PATH" required:"" default:"./le_user.json" help:"Path to store the Let's Encrypt user key and registration data."`
+	Email           string       `env:"LETSENCRYPT_EMAIL" required:"" help:"Email to use for the Let's Encrypt account."`
+	CaURL           string       `env:"LETSENCRYPT_CA_URL" required:"" default:"https://acme-staging-v02.api.letsencrypt.org/directory" help:"Let's Encrypt CA URL to use."`
+	KeyType         string       `env:"LETSENCRYPT_KEY_TYPE" required:"" default:"P256" help:"Let's Encrypt key type to use."`
+	ChallengeBucket string       `env:"LETSENCRYPT_BUCKET" required:"" help:"S3 bucket to use for HTTP-01 challenge files."`
+	UserKeyPath     string       `env:"LETSENCRYPT_USER_KEY_PATH" required:"" default:"./le_user.json" help:"Path to store the Let's Encrypt user key and registration data."`
+	HTTPClient      *http.Client `kong:"-"` // optional override; used in tests to trust self-signed CA certs
 }
 
 type Buckcert struct {
@@ -50,6 +52,10 @@ func NewBuckcert(cfg Config) (*Buckcert, error) {
 func (b *Buckcert) initClient() error {
 	legoCfg := lego.NewConfig(b.user)
 	legoCfg.CADirURL = b.config.CaURL
+
+	if b.config.HTTPClient != nil {
+		legoCfg.HTTPClient = b.config.HTTPClient
+	}
 
 	keyType, err := parseKeyType(b.config.KeyType)
 	if err != nil {

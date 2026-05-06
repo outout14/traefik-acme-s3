@@ -19,7 +19,18 @@ OUTPUT_SOFT := $(DIST_DIR)trac3-$(SOFT_VERSION)-$(GOOS)-$(ARCH)$(EXTENSION)
 
 .PHONY: vet
 vet:
-	go vet main.go
+	go vet ./...
+
+.PHONY: test
+test:
+	go test ./...
+
+.PHONY: test-integration
+test-integration:
+	go test -tags integration ./integration/...
+
+.PHONY: test-all
+test-all: test test-integration
 
 .PHONY: prepare
 prepare:
@@ -28,6 +39,7 @@ prepare:
 .PHONY: clean
 clean:
 	rm -rf $(DIST_DIR)
+	go clean -testcache
 
 .PHONY: build
 build: prepare

@@ -63,6 +63,10 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 		requestDelay = 3 * time.Second
 	}
 
+	if cfg.StateDir == "" {
+		log.Warn().Msg("StateDir is empty — failure backoff state will not persist across restarts. Set TAS3_STATE_DIR to a persistent path.")
+	}
+
 	state, err := a.loadFailureState(cfg.StateDir)
 	if err != nil {
 		log.Warn().Err(err).Msg("Could not load failure state — continuing without backoff")

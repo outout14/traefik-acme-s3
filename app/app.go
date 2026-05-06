@@ -1,16 +1,34 @@
 package app
 
 import (
-	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
+	"github.com/go-acme/lego/v4/certificate"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
 	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
-	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 )
 
+// certStore is the interface App uses for certificate storage.
+type certStore interface {
+	GetIndex() *certcloset.CertificateList
+	SaveIndex() error
+	StoreCertificate(cert certificate.Resource) error
+	RetrieveCertificate(domain string) (*certcloset.Certificate, error)
+	CertificateExists(domain string) (bool, error)
+}
+
+// certRequester is the interface App uses to obtain ACME certificates.
+type certRequester interface {
+	RequestCert(domains []string) (*certificate.Resource, error)
+}
+
+// domainProvider is the interface App uses to list domains from Traefik.
+type domainProvider interface {
+	GetDomains() ([]string, error)
+}
+
 type App struct {
-	buckcert   *buckcert.Buckcert
-	closet     *certcloset.CertCloset
-	traefikApi *traefikclient.ApiClient
+	buckcert   certRequester
+	closet     certStore
+	traefikApi domainProvider
 	lokiWriter *lokiwriter.Writer
 	config     Config
 }

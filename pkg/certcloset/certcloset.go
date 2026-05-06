@@ -13,7 +13,7 @@ import (
 type Config struct {
 	Password       string `env:"CLOSET_PASSWORD" required:"" help:"Password used to encrypt stored certificates."`
 	Bucket         string `env:"CLOSET_BUCKET" required:"" help:"S3 bucket used for storing certificates and metadata."`
-	PushPrivateKey bool   `env:"PUSH_PRIVATE_KEY" default:"true" help:"Whether the private key should also be stored."`
+	PushPrivateKey bool   `env:"CLOSET_PUSH_PRIVATE_KEY" default:"true" help:"Whether the private key should also be stored."`
 }
 
 func (c *Config) Validate() error {
@@ -21,10 +21,18 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// s3API is the subset of s3.Client methods used by CertCloset.
+type s3API interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+}
+
 type CertCloset struct {
 	index  CertificateList
 	config Config
-	s3     *s3.Client
+	s3     s3API
 }
 
 // initS3 initializes the AWS S3 client and validates bucket access.
@@ -62,6 +70,16 @@ func NewCertCloset(cfg Config) (*CertCloset, error) {
 		return nil, fmt.Errorf("failed to load certificate index: %w", err)
 	}
 
+	return c, nil
+}
+
+// NewCertClosetWithS3Client creates a CertCloset using a pre-configured S3 client.
+// Use in integration tests to supply a fake or local S3 backend.
+func NewCertClosetWithS3Client(cfg Config, client *s3.Client) (*CertCloset, error) {
+	c := &CertCloset{config: cfg, s3: client}
+	if err := c.retrieveIndex(); err != nil {
+		return nil, fmt.Errorf("failed to load certificate index: %w", err)
+	}
 	return c, nil
 }
 

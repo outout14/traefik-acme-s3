@@ -44,6 +44,12 @@ func (a *App) initLog() {
 }
 
 func (a *App) initBuckcert(cfg buckcert.Config) {
+	if a.buckcert != nil {
+		return // already set (e.g. injected in tests)
+	}
+	if cfg.UserKeyPath == "./le_user.json" {
+		log.Warn().Msg("UserKeyPath is the default './le_user.json' — ACME registration will be lost on container restart. Mount a persistent volume and set LETSENCRYPT_USER_KEY_PATH.")
+	}
 	bc, err := buckcert.NewBuckcert(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Unable to initialize Buckcert (S3-backed ACME client)")
@@ -54,6 +60,9 @@ func (a *App) initBuckcert(cfg buckcert.Config) {
 }
 
 func (a *App) initTraefikClient(cfg traefikclient.ApiConfig) {
+	if a.traefikApi != nil {
+		return // already set (e.g. injected in tests)
+	}
 	tc, err := traefikclient.NewTraefikApiClient(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Unable to initialize Traefik API client")
