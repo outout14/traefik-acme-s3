@@ -27,7 +27,7 @@ type CertificateEntry struct {
 func (cl CertificateList) GetDiff(other *CertificateList) []*CertificateEntry {
 	var diff []*CertificateEntry
 	for k, v := range cl.CertIndex {
-		if other.CertIndex[k].ExpirationDate != v.ExpirationDate {
+		if !other.CertIndex[k].ExpirationDate.Equal(v.ExpirationDate) {
 			diff = append(diff, &CertificateEntry{
 				Domain:         k,
 				ExpirationDate: v.ExpirationDate,
