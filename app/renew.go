@@ -32,6 +32,17 @@ func (a *App) Renew(cfg RenewConfig) {
 		log.Warn().Msg("No traefik API URL provided. Skipping traefik client initialization")
 	}
 
+	if cfg.ConfigServer.URL != "" {
+		a.initConfigServerClient(cfg.ConfigServer)
+
+		csDomains, err := a.configServerApi.GetDomains()
+		if err != nil {
+			log.Error().Err(err).Msg("Config-server GetDomains failed — using only configured DOMAINS for this run")
+		} else {
+			cfg.Domains = append(cfg.Domains, csDomains...)
+		}
+	}
+
 	ignored := make(map[string]struct{}, len(cfg.IgnoredDomains))
 	for _, domain := range cfg.IgnoredDomains {
 		ignored[domain] = struct{}{}

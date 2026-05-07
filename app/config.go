@@ -7,6 +7,7 @@ import (
 
 	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
+	"github.com/outout14/traefik-acme-s3/pkg/configserverclient"
 	"github.com/outout14/traefik-acme-s3/pkg/dnsupdate"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 )
@@ -56,13 +57,14 @@ func isLoopback(addr string) bool {
 }
 
 type RenewConfig struct {
-	Buckcert              buckcert.Config         `embed:"" prefix:"letsencrypt."`
-	Domains               []string                `env:"DOMAINS" help:"List of domains to manage. Will be appended with traefik and redis domains."`
-	IgnoredDomains        []string                `env:"IGNORED_DOMAINS" help:"List of ignored domains."`
-	Traefik               traefikclient.ApiConfig `embed:"" prefix:"traefik." help:"Traefik configuration."`
-	DNSUpdate             dnsupdate.Config        `embed:"" prefix:"dns-update."`
-	FailureBackoffMinutes int                     `env:"TAS3_FAILURE_BACKOFF_MINUTES" default:"60" help:"Minutes to skip a domain after a renewal failure (avoids spamming ACME API when run every 5 min)."`
-	RequestDelaySeconds   int                     `env:"TAS3_REQUEST_DELAY_SECONDS" default:"3" help:"Delay in seconds between each certificate request to avoid rate limiting."`
+	Buckcert              buckcert.Config                `embed:"" prefix:"letsencrypt."`
+	Domains               []string                       `env:"DOMAINS" help:"List of domains to manage. Will be appended with traefik and redis domains."`
+	IgnoredDomains        []string                       `env:"IGNORED_DOMAINS" help:"List of ignored domains."`
+	Traefik               traefikclient.ApiConfig        `embed:"" prefix:"traefik." help:"Traefik configuration."`
+	ConfigServer          configserverclient.Config      `embed:"" prefix:"config-server." help:"Config-server domain source (optional)."`
+	DNSUpdate             dnsupdate.Config               `embed:"" prefix:"dns-update."`
+	FailureBackoffMinutes int                            `env:"TAS3_FAILURE_BACKOFF_MINUTES" default:"60" help:"Minutes to skip a domain after a renewal failure (avoids spamming ACME API when run every 5 min)."`
+	RequestDelaySeconds   int                            `env:"TAS3_REQUEST_DELAY_SECONDS" default:"3" help:"Delay in seconds between each certificate request to avoid rate limiting."`
 	DaemonConfig          `embed:""`
 }
 
