@@ -6,6 +6,7 @@ import (
 
 	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
+	"github.com/outout14/traefik-acme-s3/pkg/dnsupdate"
 	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 	"github.com/rs/zerolog"
@@ -78,6 +79,29 @@ func (a *App) initCertCloset() {
 		log.Fatal().Err(err).Msg("Unable to initialize certificate closet")
 	}
 	a.closet = cl
+	a.state = cl // CertCloset implements stateStore; S3 is single source of truth for all state
 
 	log.Debug().Msg("Cert closet initialized")
+}
+
+func (a *App) initDNSUpdater(cfg dnsupdate.Config, caURL string) {
+	if a.dnsUpdate != nil {
+		return // already set (e.g. injected in tests)
+	}
+	if !cfg.Enabled {
+		return
+	}
+	// Duck-type to get the ACME account URI for RFC 8657 CAA accounturi parameter.
+	// Only *buckcert.Buckcert implements this; mocks and other impls return "".
+	accountURI := ""
+	type accountURIProvider interface{ AccountURI() string }
+	if p, ok := a.buckcert.(accountURIProvider); ok {
+		accountURI = p.AccountURI()
+	}
+	u, err := dnsupdate.New(cfg, caURL, accountURI)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Unable to initialize DNS updater")
+	}
+	a.dnsUpdate = u
+	log.Debug().Str("account_uri", accountURI).Msg("DNS updater initialized")
 }

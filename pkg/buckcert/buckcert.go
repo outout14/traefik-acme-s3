@@ -94,6 +94,15 @@ func (b *Buckcert) register() error {
 	return nil
 }
 
+// AccountURI returns the ACME account URL (e.g. https://acme-v02.../acme/acct/12345).
+// Returns empty string if registration has not yet completed.
+func (b *Buckcert) AccountURI() string {
+	if b.user == nil || b.user.Registration == nil {
+		return ""
+	}
+	return b.user.Registration.URI
+}
+
 // parseKeyType converts "P256" / "P384" / "RSA2048" etc. into a lego certcrypto.KeyType.
 func parseKeyType(s string) (certcrypto.KeyType, error) {
 	switch s {

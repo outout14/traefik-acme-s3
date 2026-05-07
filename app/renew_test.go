@@ -10,18 +10,18 @@ import (
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 )
 
-// ---------- mocks ----------
+// ---------- cert store mock ----------
 
 type mockStore struct {
-	index           certcloset.CertificateList
-	saveIndexErr    error
-	saveIndexCalls  int
-	storeErr        error
-	stored          []certificate.Resource
-	existsMap       map[string]bool
-	existsErr       error
-	retrieveMap     map[string]*certcloset.Certificate
-	retrieveErr     error
+	index          certcloset.CertificateList
+	saveIndexErr   error
+	saveIndexCalls int
+	storeErr       error
+	stored         []certificate.Resource
+	existsMap      map[string]bool
+	existsErr      error
+	retrieveMap    map[string]*certcloset.Certificate
+	retrieveErr    error
 }
 
 func newMockStore() *mockStore {
@@ -46,6 +46,7 @@ func (m *mockStore) StoreCertificate(cert certificate.Resource) error {
 func (m *mockStore) CertificateExists(domain string) (bool, error) {
 	return m.existsMap[domain], m.existsErr
 }
+func (m *mockStore) RemoveFromIndex(domain string) { m.index.Remove(domain) }
 func (m *mockStore) RetrieveCertificate(domain string) (*certcloset.Certificate, error) {
 	if m.retrieveErr != nil {
 		return nil, m.retrieveErr
@@ -57,10 +58,74 @@ func (m *mockStore) RetrieveCertificate(domain string) (*certcloset.Certificate,
 	return c, nil
 }
 
+// ---------- state store mock ----------
+
+type mockStateStore struct {
+	failureState  *certcloset.FailureState
+	rolloverState map[string]*certcloset.RolloverState
+	pendingKeys   map[string][]byte
+	loadFSErr     error
+	storeFSErr    error
+}
+
+func newMockStateStore() *mockStateStore {
+	return &mockStateStore{
+		failureState:  &certcloset.FailureState{LastFailure: make(map[string]string)},
+		rolloverState: make(map[string]*certcloset.RolloverState),
+		pendingKeys:   make(map[string][]byte),
+	}
+}
+
+func (m *mockStateStore) AcquireLock() error { return nil }
+func (m *mockStateStore) ReleaseLock()       {}
+
+func (m *mockStateStore) LoadFailureState() (*certcloset.FailureState, error) {
+	return m.failureState, m.loadFSErr
+}
+func (m *mockStateStore) StoreFailureState(s *certcloset.FailureState) error {
+	if m.storeFSErr == nil {
+		m.failureState = s
+	}
+	return m.storeFSErr
+}
+func (m *mockStateStore) LoadRolloverState(domain string) (*certcloset.RolloverState, bool, error) {
+	s, ok := m.rolloverState[domain]
+	return s, ok, nil
+}
+func (m *mockStateStore) StoreRolloverState(domain string, s *certcloset.RolloverState) error {
+	m.rolloverState[domain] = s
+	return nil
+}
+func (m *mockStateStore) DeleteRolloverState(domain string) error {
+	delete(m.rolloverState, domain)
+	return nil
+}
+func (m *mockStateStore) StorePendingKey(domain string, keyPEM []byte) error {
+	m.pendingKeys[domain] = keyPEM
+	return nil
+}
+func (m *mockStateStore) LoadPendingKey(domain string) ([]byte, error) {
+	k, ok := m.pendingKeys[domain]
+	if !ok {
+		return nil, fmt.Errorf("no pending key for %s", domain)
+	}
+	return k, nil
+}
+func (m *mockStateStore) DeletePendingKey(domain string) error {
+	delete(m.pendingKeys, domain)
+	return nil
+}
+
+// ---------- cert requester mock ----------
+
 type mockRequester struct {
-	cert *certificate.Resource
-	err  error
+	cert  *certificate.Resource
+	err   error
 	calls int
+	// for RequestCertWithKey
+	certWithKey  *certificate.Resource
+	errWithKey   error
+	callsWithKey int
 }
 
 func (m *mockRequester) RequestCert(_ []string) (*certificate.Resource, error) {
@@ -68,11 +133,52 @@ func (m *mockRequester) RequestCert(_ []string) (*certificate.Resource, error) {
 	return m.cert, m.err
 }
 
+func (m *mockRequester) RequestCertWithKey(_ []string, _ []byte) (*certificate.Resource, error) {
+	m.callsWithKey++
+	if m.certWithKey != nil {
+		return m.certWithKey, m.errWithKey
+	}
+	return m.cert, m.errWithKey
+}
+
+// ---------- DNS updater mock ----------
+
+type mockDNSUpdater struct {
+	calls        []string // domains UpdateDNS was called with
+	err          error
+	enabledFn    func(domain string) bool
+	addTLSACalls []string
+	remTLSACalls []string
+	updateCAACalls []string
+}
+
+func (m *mockDNSUpdater) UpdateDNS(domain string, _ []byte) error {
+	m.calls = append(m.calls, domain)
+	return m.err
+}
+func (m *mockDNSUpdater) AddTLSA(domain, _ string) error {
+	m.addTLSACalls = append(m.addTLSACalls, domain)
+	return nil
+}
+func (m *mockDNSUpdater) RemoveTLSA(domain, _ string) error {
+	m.remTLSACalls = append(m.remTLSACalls, domain)
+	return nil
+}
+func (m *mockDNSUpdater) UpdateCAA(domain string) error {
+	m.updateCAACalls = append(m.updateCAACalls, domain)
+	return nil
+}
+func (m *mockDNSUpdater) Enabled(domain string) bool {
+	if m.enabledFn != nil {
+		return m.enabledFn(domain)
+	}
+	return false // default: rollover not triggered
+}
+
 // ---------- helpers ----------
 
 func renewCfg() RenewConfig {
 	return RenewConfig{
-		StateDir:              "", // no state file
 		FailureBackoffMinutes: 60,
 		RequestDelaySeconds:   0,
 	}
@@ -86,7 +192,7 @@ func fakeCert(domain string) *certificate.Resource {
 	}
 }
 
-// ---------- tests ----------
+// ---------- basic renewal tests ----------
 
 func TestRenewNewDomainSuccess(t *testing.T) {
 	store := newMockStore()
@@ -108,10 +214,9 @@ func TestRenewNewDomainSuccess(t *testing.T) {
 
 func TestRenewValidCertExistsInS3(t *testing.T) {
 	store := newMockStore()
-	// Add cert to index with far-future expiry
 	store.index.CertIndex["valid.com"] = certcloset.CertificateEntry{
 		Domain:         "valid.com",
-		ExpirationDate: time.Now().AddDate(1, 0, 0), // 1 year from now
+		ExpirationDate: time.Now().AddDate(1, 0, 0),
 	}
 	store.existsMap["valid.com"] = true
 
@@ -131,7 +236,7 @@ func TestRenewCertInIndexButMissingS3(t *testing.T) {
 		Domain:         "stale.com",
 		ExpirationDate: time.Now().AddDate(1, 0, 0),
 	}
-	store.existsMap["stale.com"] = false // missing in S3
+	store.existsMap["stale.com"] = false
 
 	req := &mockRequester{cert: fakeCert("stale.com")}
 	a := &App{closet: store, buckcert: req}
@@ -141,16 +246,10 @@ func TestRenewCertInIndexButMissingS3(t *testing.T) {
 	if req.calls != 1 {
 		t.Fatalf("cert missing in S3 must be re-requested, got %d request(s)", req.calls)
 	}
-	if _, stillInIndex := store.index.CertIndex["stale.com"]; stillInIndex {
-		// It should have been removed from index then re-added by StoreCertificate
-		// (StoreCertificate updates the index), so it's fine either way as long as
-		// a request was made. The important thing is it was re-requested.
-	}
 }
 
 func TestRenewExpiredCert(t *testing.T) {
 	store := newMockStore()
-	// Expiry in 1 month → within the 2-month renewal window
 	store.index.CertIndex["expired.com"] = certcloset.CertificateEntry{
 		Domain:         "expired.com",
 		ExpirationDate: time.Now().AddDate(0, 1, 0),
@@ -166,7 +265,6 @@ func TestRenewExpiredCert(t *testing.T) {
 	}
 }
 
-// TestRenewBoundaryJustInsideWindow: expiry = 2 months - 1 day → must renew.
 func TestRenewBoundaryJustInsideWindow(t *testing.T) {
 	store := newMockStore()
 	store.index.CertIndex["inside.com"] = certcloset.CertificateEntry{
@@ -183,7 +281,6 @@ func TestRenewBoundaryJustInsideWindow(t *testing.T) {
 	}
 }
 
-// TestRenewBoundaryJustOutsideWindow: expiry = 2 months + 1 day → must NOT renew.
 func TestRenewBoundaryJustOutsideWindow(t *testing.T) {
 	store := newMockStore()
 	store.index.CertIndex["outside.com"] = certcloset.CertificateEntry{
@@ -239,20 +336,19 @@ func TestRenewEmptyDomainList(t *testing.T) {
 }
 
 func TestRenewDomainInBackoff(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{closet: newMockStore(), buckcert: &mockRequester{cert: fakeCert("backoff.com")}}
+	st := newMockStateStore()
+	st.failureState.LastFailure["backoff.com"] = time.Now().Format(time.RFC3339)
 
-	// Record a failure first
-	state := &failureState{LastFailure: map[string]string{
-		"backoff.com": time.Now().Format(time.RFC3339),
-	}}
-	_ = a.saveFailureState(dir, state)
+	req := &mockRequester{cert: fakeCert("backoff.com")}
+	a := &App{
+		closet:   newMockStore(),
+		buckcert: req,
+		state:    st,
+	}
 
 	cfg := renewCfg()
-	cfg.StateDir = dir
 	cfg.FailureBackoffMinutes = 60
 
-	req := a.buckcert.(*mockRequester)
 	a.renew(cfg, []string{"backoff.com"})
 
 	if req.calls != 0 {
@@ -290,6 +386,173 @@ func (p *partialRequester) RequestCert(domains []string) (*certificate.Resource,
 	return p.cert, nil
 }
 
+func (p *partialRequester) RequestCertWithKey(domains []string, _ []byte) (*certificate.Resource, error) {
+	return p.RequestCert(domains)
+}
+
+// ---------- DNS updater tests ----------
+
+func TestRenewCallsDNSUpdater(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("dns.com")}
+	updater := &mockDNSUpdater{}
+	a := &App{closet: store, buckcert: req, dnsUpdate: updater}
+
+	a.renew(renewCfg(), []string{"dns.com"})
+
+	if len(updater.calls) != 1 || updater.calls[0] != "dns.com" {
+		t.Fatalf("DNS updater must be called once with domain, got %v", updater.calls)
+	}
+}
+
+func TestRenewDNSUpdaterFailureNonFatal(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("dns.com")}
+	updater := &mockDNSUpdater{err: fmt.Errorf("DNS error")}
+	a := &App{closet: store, buckcert: req, dnsUpdate: updater}
+
+	a.renew(renewCfg(), []string{"dns.com"})
+
+	if len(store.stored) != 1 {
+		t.Fatal("cert must be stored even when DNS update fails")
+	}
+	if store.saveIndexCalls == 0 {
+		t.Fatal("index must be saved even when DNS update fails")
+	}
+}
+
+// ---------- rollover tests ----------
+
+func TestRenewStartsRolloverWhenEnabled(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("roll.com")}
+	st := newMockStateStore()
+	updater := &mockDNSUpdater{enabledFn: func(string) bool { return true }}
+
+	cfg := renewCfg()
+	cfg.DNSUpdate.RolloverEnabled = true
+	cfg.DNSUpdate.TLSATTLSeconds = 3600
+
+	a := &App{closet: store, buckcert: req, state: st, dnsUpdate: updater}
+	a.renew(cfg, []string{"roll.com"})
+
+	// Rollover started → no cert requested yet, TLSA pre-published.
+	if req.calls != 0 {
+		t.Fatalf("cert must not be requested during rollover start, got %d", req.calls)
+	}
+	if len(updater.addTLSACalls) != 1 {
+		t.Fatalf("want 1 AddTLSA call got %d", len(updater.addTLSACalls))
+	}
+	if _, exists, _ := st.LoadRolloverState("roll.com"); !exists {
+		t.Fatal("rollover state must be stored after start")
+	}
+}
+
+func TestRenewPrePublishingPhaseWaitsForTTL(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("roll.com")}
+	st := newMockStateStore()
+	// Store rollover state with PhaseStartedAt = now (TTL not elapsed yet).
+	_ = st.StoreRolloverState("roll.com", &certcloset.RolloverState{
+		Phase:          certcloset.RolloverPhasePrePublishing,
+		NewTLSAHex:     "aabbcc",
+		PhaseStartedAt: time.Now(),
+		TLSATTLSeconds: 3600,
+		SyncLagSeconds: 300,
+	})
+	updater := &mockDNSUpdater{enabledFn: func(string) bool { return true }}
+
+	a := &App{closet: store, buckcert: req, state: st, dnsUpdate: updater}
+	a.renew(renewCfg(), []string{"roll.com"})
+
+	if req.calls != 0 || req.callsWithKey != 0 {
+		t.Fatalf("must not request cert while TTL waiting, calls=%d/%d", req.calls, req.callsWithKey)
+	}
+}
+
+func TestRenewPrePublishingPhaseAdvancesAfterTTL(t *testing.T) {
+	store := newMockStore()
+	cert := fakeCert("roll.com")
+	req := &mockRequester{cert: cert, certWithKey: cert}
+	st := newMockStateStore()
+	// Store pending key so LoadPendingKey succeeds.
+	_ = st.StorePendingKey("roll.com", []byte("fake-key-pem"))
+	// Store rollover state with PhaseStartedAt in the past (TTL elapsed).
+	_ = st.StoreRolloverState("roll.com", &certcloset.RolloverState{
+		Phase:          certcloset.RolloverPhasePrePublishing,
+		NewTLSAHex:     "aabbcc",
+		PhaseStartedAt: time.Now().Add(-2 * time.Hour),
+		TLSATTLSeconds: 3600,
+		SyncLagSeconds: 300,
+	})
+	updater := &mockDNSUpdater{enabledFn: func(string) bool { return true }}
+
+	a := &App{closet: store, buckcert: req, state: st, dnsUpdate: updater}
+	a.renew(renewCfg(), []string{"roll.com"})
+
+	if req.callsWithKey != 1 {
+		t.Fatalf("want 1 RequestCertWithKey call, got %d", req.callsWithKey)
+	}
+	if len(store.stored) != 1 {
+		t.Fatalf("want cert stored after TTL elapsed, got %d", len(store.stored))
+	}
+	rs, exists, _ := st.LoadRolloverState("roll.com")
+	if !exists {
+		t.Fatal("rollover state must still exist in CertSwitched phase")
+	}
+	if rs.Phase != certcloset.RolloverPhaseCertSwitched {
+		t.Fatalf("want CertSwitched phase, got %q", rs.Phase)
+	}
+}
+
+func TestRenewCertSwitchedPhaseWaitsForSyncLag(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("roll.com")}
+	st := newMockStateStore()
+	_ = st.StoreRolloverState("roll.com", &certcloset.RolloverState{
+		Phase:          certcloset.RolloverPhaseCertSwitched,
+		OldTLSAHex:     "oldoldold",
+		NewTLSAHex:     "newnewnew",
+		PhaseStartedAt: time.Now(), // lag not elapsed
+		SyncLagSeconds: 300,
+	})
+	updater := &mockDNSUpdater{enabledFn: func(string) bool { return true }}
+
+	a := &App{closet: store, buckcert: req, state: st, dnsUpdate: updater}
+	a.renew(renewCfg(), []string{"roll.com"})
+
+	if len(updater.remTLSACalls) != 0 {
+		t.Fatal("must not remove old TLSA while sync lag waiting")
+	}
+	if _, exists, _ := st.LoadRolloverState("roll.com"); !exists {
+		t.Fatal("rollover state must persist while waiting")
+	}
+}
+
+func TestRenewCertSwitchedPhaseCompletesAfterSyncLag(t *testing.T) {
+	store := newMockStore()
+	req := &mockRequester{cert: fakeCert("roll.com")}
+	st := newMockStateStore()
+	_ = st.StoreRolloverState("roll.com", &certcloset.RolloverState{
+		Phase:          certcloset.RolloverPhaseCertSwitched,
+		OldTLSAHex:     "oldoldold",
+		NewTLSAHex:     "newnewnew",
+		PhaseStartedAt: time.Now().Add(-10 * time.Minute), // lag elapsed
+		SyncLagSeconds: 300,
+	})
+	updater := &mockDNSUpdater{enabledFn: func(string) bool { return true }}
+
+	a := &App{closet: store, buckcert: req, state: st, dnsUpdate: updater}
+	a.renew(renewCfg(), []string{"roll.com"})
+
+	if len(updater.remTLSACalls) != 1 {
+		t.Fatalf("want 1 RemoveTLSA call, got %d", len(updater.remTLSACalls))
+	}
+	if _, exists, _ := st.LoadRolloverState("roll.com"); exists {
+		t.Fatal("rollover state must be deleted after completion")
+	}
+}
+
 // ---------- public Renew() tests ----------
 
 func TestRenewPublicNoDomainsAfterFilter(t *testing.T) {
@@ -297,7 +560,6 @@ func TestRenewPublicNoDomainsAfterFilter(t *testing.T) {
 	req := &mockRequester{cert: fakeCert("x.com")}
 	a := &App{closet: store, buckcert: req}
 
-	// All domains are ignored → Renew logs warning and returns early
 	cfg := RenewConfig{
 		Domains:               []string{"ignored.com"},
 		IgnoredDomains:        []string{"ignored.com"},
@@ -354,7 +616,6 @@ func TestRenewPublicNoTraefikURL(t *testing.T) {
 	cfg := RenewConfig{
 		Domains:               []string{"direct.com"},
 		FailureBackoffMinutes: 60,
-		// Traefik.Url is empty → skips Traefik init
 	}
 	a.Renew(cfg)
 
@@ -374,11 +635,10 @@ func TestRenewPublicWithTraefikDomains(t *testing.T) {
 	cfg := RenewConfig{
 		Domains:               []string{"direct.com"},
 		FailureBackoffMinutes: 60,
-		Traefik:               traefikclient.ApiConfig{Url: "http://traefik.local"}, // non-empty triggers path
+		Traefik:               traefikclient.ApiConfig{Url: "http://traefik.local"},
 	}
 	a.Renew(cfg)
 
-	// Both direct.com and traefik.com should be processed (2 requests)
 	if req.calls != 2 {
 		t.Fatalf("want 2 requests (direct + traefik domain), got %d", req.calls)
 	}
@@ -387,6 +647,6 @@ func TestRenewPublicWithTraefikDomains(t *testing.T) {
 // ---------- App.Close ----------
 
 func TestAppCloseNilWriter(t *testing.T) {
-	a := &App{} // lokiWriter is nil
-	a.Close()   // must not panic
+	a := &App{}
+	a.Close() // must not panic
 }

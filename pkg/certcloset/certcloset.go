@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -17,7 +19,9 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
-	// Add validation rules if needed, currently always valid
+	if c.Password == "" {
+		return fmt.Errorf("CLOSET_PASSWORD must not be empty")
+	}
 	return nil
 }
 
@@ -25,14 +29,17 @@ func (c *Config) Validate() error {
 type s3API interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 type CertCloset struct {
+	mu     sync.Mutex
 	index  CertificateList
 	config Config
 	s3     s3API
+	dirty  bool
 }
 
 // initS3 initializes the AWS S3 client and validates bucket access.
@@ -46,7 +53,6 @@ func (c *CertCloset) initS3() error {
 
 	c.s3 = s3.NewFromConfig(cfg)
 
-	// Validate bucket existence + permission
 	_, err = c.s3.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: &c.config.Bucket,
 	})
@@ -58,9 +64,11 @@ func (c *CertCloset) initS3() error {
 }
 
 func NewCertCloset(cfg Config) (*CertCloset, error) {
-	c := &CertCloset{
-		config: cfg,
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+
+	c := &CertCloset{config: cfg}
 
 	if err := c.initS3(); err != nil {
 		return nil, err
@@ -83,28 +91,62 @@ func NewCertClosetWithS3Client(cfg Config, client *s3.Client) (*CertCloset, erro
 	return c, nil
 }
 
-// GetIndex returns the internal index safely.
-// Returning a pointer avoids accidental copies and keeps behavior consistent.
+// GetIndex returns the internal index. The returned pointer is not safe to write
+// concurrently with StoreCertificate or RemoveFromIndex.
 func (c *CertCloset) GetIndex() *CertificateList {
 	return &c.index
 }
 
-// SaveIndex persists the index to S3 (certificate metadata JSON).
+// s3PutWithRetry uploads data to S3 with up to 3 attempts and exponential backoff (2s/4s/8s).
+func (c *CertCloset) s3PutWithRetry(key string, data []byte) error {
+	backoff := 2 * time.Second
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+		_, lastErr = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
+			Bucket: &c.config.Bucket,
+			Key:    &key,
+			Body:   bytes.NewReader(data),
+		})
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+// SaveIndex persists the index to S3 with up to 3 attempts and exponential backoff.
+// No-op when index is unchanged.
 func (c *CertCloset) SaveIndex() error {
+	c.mu.Lock()
+	dirty := c.dirty
+	c.mu.Unlock()
+	if !dirty {
+		return nil
+	}
+
 	data, err := json.Marshal(c.index)
 	if err != nil {
 		return fmt.Errorf("failed to marshal index JSON: %w", err)
 	}
 
-	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: &c.config.Bucket,
-		Key:    &CerticateIndexFile, // keep original constant if defined elsewhere
-		Body:   bytes.NewReader(data),
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to upload index to S3: %w", err)
+	if err := c.s3PutWithRetry(CerticateIndexFile, data); err != nil {
+		return fmt.Errorf("failed to upload index after 3 attempts: %w", err)
 	}
 
+	c.mu.Lock()
+	c.dirty = false
+	c.mu.Unlock()
 	return nil
+}
+
+// RemoveFromIndex removes a domain from the in-memory index and marks it dirty.
+func (c *CertCloset) RemoveFromIndex(domain string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.index.Remove(domain)
+	c.dirty = true
 }

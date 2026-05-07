@@ -1,60 +1,31 @@
 package app
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"time"
 
+	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
 	"github.com/rs/zerolog/log"
 )
 
-const failureStateFile = "renew_failures.json"
-
-// failureState holds last failure time per domain (RFC3339).
-type failureState struct {
-	LastFailure map[string]string `json:"last_failure"`
+// loadFailureState returns the current failure state from S3.
+// Returns an empty state when a.state is nil (e.g. in unit tests without state injection).
+func (a *App) loadFailureState() (*certcloset.FailureState, error) {
+	if a.state == nil {
+		return &certcloset.FailureState{LastFailure: make(map[string]string)}, nil
+	}
+	return a.state.LoadFailureState()
 }
 
-func (a *App) loadFailureState(stateDir string) (*failureState, error) {
-	if stateDir == "" {
-		return &failureState{LastFailure: make(map[string]string)}, nil
-	}
-	path := filepath.Join(stateDir, failureStateFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &failureState{LastFailure: make(map[string]string)}, nil
-		}
-		return nil, err
-	}
-	var s failureState
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, err
-	}
-	if s.LastFailure == nil {
-		s.LastFailure = make(map[string]string)
-	}
-	return &s, nil
-}
-
-func (a *App) saveFailureState(stateDir string, s *failureState) error {
-	if stateDir == "" {
+// saveFailureState persists the failure state to S3. No-op when a.state is nil.
+func (a *App) saveFailureState(s *certcloset.FailureState) error {
+	if a.state == nil {
 		return nil
 	}
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return err
-	}
-	path := filepath.Join(stateDir, failureStateFile)
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+	return a.state.StoreFailureState(s)
 }
 
 // isInBackoff returns true if domain failed recently within backoffMinutes.
-func (a *App) isInBackoff(s *failureState, domain string, backoffMinutes int) bool {
+func (a *App) isInBackoff(s *certcloset.FailureState, domain string, backoffMinutes int) bool {
 	if s == nil || backoffMinutes <= 0 {
 		return false
 	}
@@ -69,14 +40,14 @@ func (a *App) isInBackoff(s *failureState, domain string, backoffMinutes int) bo
 	return time.Since(t) < time.Duration(backoffMinutes)*time.Minute
 }
 
-func (a *App) recordFailure(s *failureState, domain string) {
+func (a *App) recordFailure(s *certcloset.FailureState, domain string) {
 	if s == nil || s.LastFailure == nil {
 		return
 	}
 	s.LastFailure[domain] = time.Now().Format(time.RFC3339)
 }
 
-func (a *App) clearFailure(s *failureState, domain string) {
+func (a *App) clearFailure(s *certcloset.FailureState, domain string) {
 	if s == nil || s.LastFailure == nil {
 		return
 	}

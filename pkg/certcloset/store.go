@@ -1,9 +1,10 @@
 package certcloset
 
 import (
-	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-acme/lego/v4/certificate"
 )
+
+// expiryFromCertPEM parses the leaf cert in certPEM and returns its NotAfter.
+// Falls back to 89 days from now when the PEM cannot be parsed.
+func expiryFromCertPEM(certPEM []byte) time.Time {
+	block, _ := pem.Decode(certPEM)
+	if block != nil {
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			return cert.NotAfter
+		}
+	}
+	return time.Now().AddDate(0, 0, 89)
+}
 
 // IsErrNotFound returns true if the error indicates the S3 object does not exist (404).
 func IsErrNotFound(err error) bool {
@@ -44,24 +57,20 @@ func (c *CertCloset) StoreCertificate(cert certificate.Resource) error {
 		return err
 	}
 
-	// Store the certificate in the S3 bucket
-	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: &c.config.Bucket,
-		Key:    &cert.Domain,
-		Body:   bytes.NewReader(jsonCert),
-	})
-	if err != nil {
-		return fmt.Errorf("unable to store certificate in S3: %w", err)
+	if err = c.s3PutWithRetry(cert.Domain, jsonCert); err != nil {
+		return fmt.Errorf("unable to store certificate in S3 after retries: %w", err)
 	}
 
-	// Update the index
-	// expDate is today + 89 days (the max validity of a Let's Encrypt certificate)
-	expDate := time.Now().AddDate(0, 0, 89)
+	// Update the index — use actual cert expiry, fall back to 89 days if PEM unparseable.
+	expDate := expiryFromCertPEM(cert.Certificate)
 
+	c.mu.Lock()
 	c.index.CertIndex[cert.Domain] = CertificateEntry{
 		Domain:         cert.Domain,
 		ExpirationDate: expDate,
 	}
+	c.dirty = true
+	c.mu.Unlock()
 
 	return nil
 }

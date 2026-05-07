@@ -1,8 +1,13 @@
 package app
 
 import (
+	"fmt"
+	"net"
+	"time"
+
 	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
+	"github.com/outout14/traefik-acme-s3/pkg/dnsupdate"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 )
 
@@ -13,14 +18,52 @@ type Config struct {
 	Closet   certcloset.Config `embed:"" prefix:"closet."`
 }
 
+// DaemonConfig holds interval and HTTP trigger settings shared by renew and sync daemon modes.
+// TAS3_INTERVAL=0 (default) means run once and exit. Both daemon types use the same env var
+// names since they run as separate processes.
+type DaemonConfig struct {
+	Interval           time.Duration `env:"TAS3_INTERVAL" default:"0" help:"Run as daemon with this interval (e.g. 1h, 5m). 0 = run once and exit."`
+	HTTPAddr           string        `env:"TAS3_HTTP_ADDR" default:"" help:"Bind address for HTTP trigger+health server (e.g. :8080). Bind to loopback or use a reverse proxy — no TLS is provided. Empty = disabled."`
+	HTTPToken          string        `env:"TAS3_HTTP_TOKEN" default:"" help:"Bearer token for HTTP trigger auth. Takes priority over TAS3_HTTP_TOKEN_FILE."`
+	HTTPTokenFile      string        `env:"TAS3_HTTP_TOKEN_FILE" default:"" help:"Path to file containing the HTTP trigger token (Docker secret fallback)."`
+	TriggerRateLimit   int           `env:"TAS3_TRIGGER_RATE_LIMIT" default:"10" help:"Max POST /trigger requests per minute (0 = unlimited)."`
+	MetricsAddr        string        `env:"TAS3_METRICS_ADDR" default:"" help:"Separate bind address for /metrics endpoint (e.g. :9090). Empty = serve on HTTPAddr if set."`
+}
+
+// Validate returns an error for invalid DaemonConfig combinations.
+func (d *DaemonConfig) Validate() error {
+	if d.Interval <= 0 {
+		return fmt.Errorf("TAS3_INTERVAL must be positive for daemon mode (got %v)", d.Interval)
+	}
+	return nil
+}
+
+// isLoopback reports whether the host part of addr resolves to a loopback interface.
+// Empty host (":8080") means bind-all and is NOT considered loopback.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 type RenewConfig struct {
 	Buckcert              buckcert.Config         `embed:"" prefix:"letsencrypt."`
 	Domains               []string                `env:"DOMAINS" help:"List of domains to manage. Will be appended with traefik and redis domains."`
 	IgnoredDomains        []string                `env:"IGNORED_DOMAINS" help:"List of ignored domains."`
 	Traefik               traefikclient.ApiConfig `embed:"" prefix:"traefik." help:"Traefik configuration."`
-	StateDir              string                  `env:"TAS3_STATE_DIR" default:"" help:"Directory to persist failure backoff state (optional). If set, domains that failed renewal are skipped for FailureBackoffMinutes."`
+	DNSUpdate             dnsupdate.Config        `embed:"" prefix:"dns-update."`
 	FailureBackoffMinutes int                     `env:"TAS3_FAILURE_BACKOFF_MINUTES" default:"60" help:"Minutes to skip a domain after a renewal failure (avoids spamming ACME API when run every 5 min)."`
 	RequestDelaySeconds   int                     `env:"TAS3_REQUEST_DELAY_SECONDS" default:"3" help:"Delay in seconds between each certificate request to avoid rate limiting."`
+	DaemonConfig          `embed:""`
 }
 
 type SyncConfig struct {
@@ -30,4 +73,5 @@ type SyncConfig struct {
 		Format         string `env:"TRAEFIK_OUTPUT_FORMAT" required:"" default:"toml" help:"The format to store the outputed configuration."`
 		CertificateDir string `env:"TRAEFIK_CERTIFICATE_DIR" required:"" help:"Where the certificates are stored relative to traefik."`
 	} `embed:"" prefix:"traefik." help:"Traefik configuration."`
+	DaemonConfig `embed:""`
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
@@ -17,15 +18,26 @@ const (
 	KEY_EXT  = "key.pem"
 )
 
+// atomicWrite writes content to path via a temp file + rename so readers (e.g. Traefik) never
+// see a partially-written file.
+func atomicWrite(path string, content []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, content, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func (a *App) writeCertificate(basepath string, cert *certcloset.Certificate) error {
-	if err := os.MkdirAll(filepath.Join(basepath, cert.Domain), 0755); err != nil {
+	dir := filepath.Join(basepath, cert.Domain)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 	for path, content := range map[string][]byte{
-		filepath.Join(basepath, cert.Domain, CERT_EXT): cert.Certificate,
-		filepath.Join(basepath, cert.Domain, KEY_EXT):  cert.PrivateKey,
+		filepath.Join(dir, CERT_EXT): cert.Certificate,
+		filepath.Join(dir, KEY_EXT):  cert.PrivateKey,
 	} {
-		if err := os.WriteFile(path, content, 0644); err != nil {
+		if err := atomicWrite(path, content, 0644); err != nil {
 			return err
 		}
 	}
@@ -57,9 +69,12 @@ func (a *App) syncCerts(cfg SyncConfig) error {
 		if err != nil {
 			if certcloset.IsErrNotFound(err) {
 				log.Warn().Str("domain", crt.Domain).Msg("Certificate in index but missing in S3 — removing stale index entry")
-				a.closet.GetIndex().Remove(crt.Domain)
+				a.closet.RemoveFromIndex(crt.Domain)
 				if saveErr := a.closet.SaveIndex(); saveErr != nil {
 					log.Error().Err(saveErr).Str("domain", crt.Domain).Msg("Failed to save index after removing stale entry")
+				}
+				if a.metrics != nil {
+					a.metrics.removeDomain(crt.Domain)
 				}
 			} else {
 				log.Error().Err(err).Str("domain", crt.Domain).Msg("Unable to retrieve certificate")
@@ -67,8 +82,7 @@ func (a *App) syncCerts(cfg SyncConfig) error {
 			continue
 		}
 
-		err = a.writeCertificate(cfg.Traefik.LocalStore, cert)
-		if err != nil {
+		if err = a.writeCertificate(cfg.Traefik.LocalStore, cert); err != nil {
 			log.Error().Err(err).Str("domain", cert.Domain).Msg("Unable to store certificate")
 		}
 		log.Info().Str("domain", crt.Domain).Msg("Certificate synced")
@@ -94,37 +108,56 @@ func (a *App) writeTraefikConfig(cfg SyncConfig) error {
 
 	var out []byte
 	var err error
-	if cfg.Traefik.Format == "toml" {
+	switch cfg.Traefik.Format {
+	case "toml":
 		out, err = toml.Marshal(tcfg)
-		if err != nil {
-			log.Error().Err(err).Msg("Unable to marshal certificate pair")
-			return err
-		}
-	} else if cfg.Traefik.Format == "yaml" {
+	case "yaml":
 		out, err = yaml.Marshal(tcfg)
-		if err != nil {
-			log.Error().Err(err).Msg("Unable to marshal certificate pair")
-			return err
-		}
-	} else {
-		log.Error().Str("format", cfg.Traefik.Format).Msg("Unsupported format for traefik configuration")
-		return fmt.Errorf("unsupported format for traefik configuration: %s", cfg.Traefik.Format)
+	default:
+		return fmt.Errorf("unsupported traefik config format: %s", cfg.Traefik.Format)
+	}
+	if err != nil {
+		return fmt.Errorf("marshal traefik config: %w", err)
 	}
 
-	if err := os.WriteFile(cfg.Traefik.ConfigFile, out, 0644); err != nil {
-		log.Error().Err(err).Msg("Unable to write traefik configuration")
+	if err := atomicWrite(cfg.Traefik.ConfigFile, out, 0644); err != nil {
+		return fmt.Errorf("write traefik config: %w", err)
 	}
 
 	return nil
 }
 
 func (a *App) Sync(cfg SyncConfig) error {
+	if a.state != nil {
+		if err := a.state.AcquireLock(); err != nil {
+			log.Error().Err(err).Msg("Could not acquire distributed lock — skipping sync run")
+			return nil
+		}
+		defer a.state.ReleaseLock()
+	}
+
 	if err := a.syncCerts(cfg); err != nil {
+		if a.metrics != nil {
+			a.metrics.syncTotal.WithLabelValues("fail").Inc()
+		}
 		return err
 	}
 
 	if err := a.writeTraefikConfig(cfg); err != nil {
+		if a.metrics != nil {
+			a.metrics.syncTotal.WithLabelValues("fail").Inc()
+		}
 		return err
+	}
+
+	now := time.Now()
+	a.mu.Lock()
+	a.lastSync = now
+	a.mu.Unlock()
+
+	if a.metrics != nil {
+		a.metrics.syncTotal.WithLabelValues("ok").Inc()
+		a.metrics.lastSyncTs.Set(float64(now.Unix()))
 	}
 
 	return nil

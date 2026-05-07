@@ -13,6 +13,9 @@ func (r *RenewCmd) Run(ctx *app.Config) error {
 	a := app.App{}
 	a.Init(*ctx)
 	defer a.Close()
+	if r.Interval > 0 {
+		return a.RunRenewDaemon(r.RenewConfig)
+	}
 	a.Renew(r.RenewConfig)
 	return nil
 }
@@ -25,6 +28,9 @@ func (s *SyncCmd) Run(ctx *app.Config) error {
 	a := app.App{}
 	a.Init(*ctx)
 	defer a.Close()
+	if s.Interval > 0 {
+		return a.RunSyncDaemon(s.SyncConfig)
+	}
 	return a.Sync(s.SyncConfig)
 }
 

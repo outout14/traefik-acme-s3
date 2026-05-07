@@ -3,7 +3,14 @@ package certcloset
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"sync"
 	"testing"
@@ -15,11 +22,32 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 )
 
+// selfSignedCertPEM returns a minimal self-signed PEM cert with the given NotAfter.
+func selfSignedCertPEM(t *testing.T, notAfter time.Time) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    notAfter.Add(-24 * time.Hour),
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 // mockS3 is an in-memory implementation of s3API for unit tests.
 type mockS3 struct {
 	mu         sync.Mutex
 	objects    map[string][]byte
 	headObjErr error // when set, HeadObject returns this error instead of 404/200
+	putCalls   int
 }
 
 func newMockS3() *mockS3 { return &mockS3{objects: make(map[string][]byte)} }
@@ -56,7 +84,15 @@ func (m *mockS3) PutObject(_ context.Context, params *s3.PutObjectInput, _ ...fu
 		return nil, err
 	}
 	m.objects[*params.Key] = data
+	m.putCalls++
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (m *mockS3) DeleteObject(_ context.Context, params *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.objects, *params.Key)
+	return &s3.DeleteObjectOutput{}, nil
 }
 
 func (m *mockS3) HeadObject(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
@@ -102,6 +138,7 @@ func TestSaveAndReloadIndex(t *testing.T) {
 	c := newTestCloset(t, false)
 	exp := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
 	c.index.CertIndex["reload.com"] = CertificateEntry{Domain: "reload.com", ExpirationDate: exp}
+	c.dirty = true
 
 	if err := c.SaveIndex(); err != nil {
 		t.Fatalf("SaveIndex: %v", err)
@@ -170,6 +207,28 @@ func TestStoreCertificateSetsIndexExpiry89Days(t *testing.T) {
 
 	if entry.ExpirationDate.Before(wantMin) || entry.ExpirationDate.After(wantMax) {
 		t.Errorf("expiry %v not in expected range [%v, %v]", entry.ExpirationDate, wantMin, wantMax)
+	}
+}
+
+func TestStoreCertificateSetsIndexExpiryFromPEM(t *testing.T) {
+	c := newTestCloset(t, false)
+	wantExpiry := time.Date(2028, 6, 15, 0, 0, 0, 0, time.UTC)
+	certPEM := selfSignedCertPEM(t, wantExpiry)
+
+	res := certificate.Resource{
+		Domain:      "pem-expiry.com",
+		Certificate: certPEM,
+	}
+	if err := c.StoreCertificate(res); err != nil {
+		t.Fatalf("StoreCertificate: %v", err)
+	}
+
+	entry, ok := c.index.CertIndex["pem-expiry.com"]
+	if !ok {
+		t.Fatal("pem-expiry.com not in index")
+	}
+	if !entry.ExpirationDate.Equal(wantExpiry) {
+		t.Errorf("expiry want %v got %v", wantExpiry, entry.ExpirationDate)
 	}
 }
 
@@ -285,6 +344,75 @@ func TestIsErrNotFoundNon404(t *testing.T) {
 			t.Errorf("HTTP %d must not satisfy IsErrNotFound", code)
 		}
 	}
+}
+
+func TestConfigValidateEmptyPassword(t *testing.T) {
+	cfg := Config{Password: "", Bucket: "b"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("empty password must fail validation")
+	}
+}
+
+func TestConfigValidateNonEmpty(t *testing.T) {
+	cfg := Config{Password: "secret", Bucket: "b"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("non-empty password must pass: %v", err)
+	}
+}
+
+func TestSaveIndexNoOpWhenClean(t *testing.T) {
+	c := newTestCloset(t, false)
+	mock := c.s3.(*mockS3)
+	initialPuts := mock.putCalls
+	if err := c.SaveIndex(); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
+	if mock.putCalls != initialPuts {
+		t.Fatal("SaveIndex must be no-op when index is clean")
+	}
+}
+
+func TestSaveIndexDirtyAfterStore(t *testing.T) {
+	c := newTestCloset(t, false)
+	mock := c.s3.(*mockS3)
+	if err := c.StoreCertificate(certificate.Resource{Domain: "dirty.com", Certificate: []byte("CERT")}); err != nil {
+		t.Fatal(err)
+	}
+	putsBefore := mock.putCalls
+	if err := c.SaveIndex(); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
+	if mock.putCalls == putsBefore {
+		t.Fatal("SaveIndex must write when index is dirty")
+	}
+	if c.dirty {
+		t.Fatal("dirty flag must be cleared after successful save")
+	}
+}
+
+func TestAcquireReleaseLock(t *testing.T) {
+	c := newTestCloset(t, false)
+	if err := c.AcquireLock(); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	c.ReleaseLock()
+	// After release, acquiring again must succeed.
+	if err := c.AcquireLock(); err != nil {
+		t.Fatalf("AcquireLock after release: %v", err)
+	}
+	c.ReleaseLock()
+}
+
+func TestAcquireLockRejectsActiveLock(t *testing.T) {
+	c := newTestCloset(t, false)
+	if err := c.AcquireLock(); err != nil {
+		t.Fatalf("first AcquireLock: %v", err)
+	}
+	// Second acquire should fail — lock is fresh.
+	if err := c.AcquireLock(); err == nil {
+		t.Fatal("second AcquireLock must fail while lock is held")
+	}
+	c.ReleaseLock()
 }
 
 func TestCertificateExistsS3Error(t *testing.T) {
