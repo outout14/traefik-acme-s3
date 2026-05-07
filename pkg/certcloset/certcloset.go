@@ -143,6 +143,14 @@ func (c *CertCloset) SaveIndex() error {
 	return nil
 }
 
+// AddToIndex adds an entry to the in-memory index and marks it dirty.
+func (c *CertCloset) AddToIndex(entry CertificateEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.index.Add(entry)
+	c.dirty = true
+}
+
 // RemoveFromIndex removes a domain from the in-memory index and marks it dirty.
 func (c *CertCloset) RemoveFromIndex(domain string) {
 	c.mu.Lock()

@@ -188,7 +188,7 @@ func TestIndexPersistenceViaS3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open c1: %v", err)
 	}
-	c1.GetIndex().Add(certcloset.CertificateEntry{Domain: "persist.com", ExpirationDate: exp})
+	c1.AddToIndex(certcloset.CertificateEntry{Domain: "persist.com", ExpirationDate: exp})
 	if err := c1.SaveIndex(); err != nil {
 		t.Fatalf("SaveIndex: %v", err)
 	}
