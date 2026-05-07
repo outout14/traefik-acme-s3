@@ -47,7 +47,6 @@ TAS3 uses the AWS SDK default config chain — no custom S3 flags. Set these sta
 | `LETSENCRYPT_USER_KEY_PATH` | `--letsencrypt.user-key-path` | `./le_user.json` | **Must point to a persistent path** — stores ACME account key and registration |
 | `DOMAINS` | `--domains` | — | Extra domains beyond Traefik API |
 | `IGNORED_DOMAINS` | `--ignored-domains` | — | Domains to skip |
-| `TAS3_STATE_DIR` | `--state-dir` | — | **Recommended: set to a persistent path** — stores failure backoff state |
 | `TAS3_FAILURE_BACKOFF_MINUTES` | `--failure-backoff-minutes` | `60` | Minutes to skip a domain after renewal failure |
 | `TAS3_REQUEST_DELAY_SECONDS` | `--request-delay-seconds` | `3` | Delay between certificate requests |
 | `TRAEFIK_API_URL` | `--traefik.url` | — | Traefik API base URL (optional) |
@@ -65,12 +64,49 @@ TAS3 uses the AWS SDK default config chain — no custom S3 flags. Set these sta
 | `TRAEFIK_OUTPUT_FORMAT` | `--traefik.format` | `toml` or `yaml` |
 | `TRAEFIK_CERTIFICATE_DIR` | `--traefik.certificate-dir` | Certificate path prefix written into the config file |
 
+### Daemon mode (both commands)
+
+Set `TAS3_INTERVAL` to run continuously instead of once-and-exit.
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `TAS3_INTERVAL` | `--interval` | `0` | Daemon loop interval (e.g. `1h`, `5m`). `0` = run once and exit |
+| `TAS3_HTTP_ADDR` | `--http-addr` | `` | Bind address for HTTP trigger + health server (e.g. `:8080`). Bind to loopback or use a reverse proxy — no TLS provided |
+| `TAS3_HTTP_TOKEN` | `--http-token` | `` | Bearer token for `POST /trigger` auth. Takes priority over `TAS3_HTTP_TOKEN_FILE` |
+| `TAS3_HTTP_TOKEN_FILE` | `--http-token-file` | `` | Path to file containing the HTTP token (Docker secret fallback) |
+| `TAS3_TRIGGER_RATE_LIMIT` | `--trigger-rate-limit` | `10` | Max `POST /trigger` requests per minute (`0` = unlimited) |
+| `TAS3_METRICS_ADDR` | `--metrics-addr` | `` | Separate bind address for `/metrics` (e.g. `:9090`). Empty = served on `TAS3_HTTP_ADDR` when set |
+
+HTTP endpoints (when `TAS3_HTTP_ADDR` is set):
+
+- `POST /trigger` — fire an immediate run (auth required when token is configured)
+- `GET /health` — JSON status with `last_renew` / `last_sync` timestamps
+- `GET /metrics` — Prometheus metrics (also available on `TAS3_METRICS_ADDR`)
+
+### DNS UPDATE / DANE-TLSA (optional)
+
+When enabled, TAS3 publishes TLSA and CAA records via RFC 2136 DNS UPDATE after each renewal. A 3-phase rollover prevents DANE verification gaps: new TLSA is pre-published, the certificate is switched after the TLSA TTL expires, then the old TLSA is removed.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DNS_UPDATE_ENABLED` | `false` | Enable DNS UPDATE |
+| `DNS_UPDATE_KEYS_FILE` | — | Path to JSON file mapping domain → TSIG key config |
+| `DNS_UPDATE_TTL` | `300` | TTL for TLSA and CAA records |
+| `DNS_UPDATE_TLSA_PORT` | `443` | Port in TLSA record name (`_PORT._PROTO.domain`) |
+| `DNS_UPDATE_TLSA_PROTO` | `tcp` | Protocol in TLSA record name |
+| `DNS_UPDATE_CAA_ISSUER` | — | CAA issuer value. Empty = derived from ACME CA URL |
+| `DNS_UPDATE_CAA_IODEF` | — | CAA iodef value (e.g. `mailto:ops@example.com`) |
+| `DNS_UPDATE_ROLLOVER_ENABLED` | `true` | 3-phase TLSA rollover. `false` = atomic swap (gap risk) |
+| `DNS_UPDATE_TLSA_TTL_SECONDS` | `3600` | Seconds to wait after pre-publishing new TLSA before switching cert |
+| `DNS_UPDATE_SYNC_LAG_SECONDS` | `300` | Seconds to wait after cert switch before removing old TLSA |
+
 ## Persistent volumes
 
-Two paths **must** be on a persistent volume in container deployments:
+One path **must** be on a persistent volume in container deployments:
 
 - **`LETSENCRYPT_USER_KEY_PATH`** — the ACME account key and registration. If lost, TAS3 re-registers a new account on every start, which will hit Let's Encrypt rate limits.
-- **`TAS3_STATE_DIR`** — failure backoff state. If lost, previously-failed domains are retried immediately, risking ACME rate-limit bans.
+
+All other state (failure backoff, TLSA rollover progress, distributed lock) is stored in S3 alongside the certificates.
 
 ## S3 HTTP-01 challenge
 
@@ -98,8 +134,29 @@ docker run --rm \
   -e LETSENCRYPT_CA_URL=https://acme-v02.api.letsencrypt.org/directory \
   -e LETSENCRYPT_BUCKET=my-acme-challenges \
   -e LETSENCRYPT_USER_KEY_PATH=/state/le_user.json \
-  -e TAS3_STATE_DIR=/state \
   -e DOMAINS=example.com,www.example.com \
+  -v /persistent/tas3:/state \
+  ghcr.io/outout14/traefik-acme-s3:main renew
+```
+
+### Daemon mode example
+
+```bash
+docker run -d \
+  -e AWS_ACCESS_KEY_ID=minioadmin \
+  -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ENDPOINT_URL=http://minio:9000 \
+  -e CLOSET_BUCKET=my-certs \
+  -e CLOSET_PASSWORD=changeme \
+  -e LETSENCRYPT_EMAIL=admin@example.com \
+  -e LETSENCRYPT_CA_URL=https://acme-v02.api.letsencrypt.org/directory \
+  -e LETSENCRYPT_BUCKET=my-acme-challenges \
+  -e LETSENCRYPT_USER_KEY_PATH=/state/le_user.json \
+  -e DOMAINS=example.com,www.example.com \
+  -e TAS3_INTERVAL=12h \
+  -e TAS3_HTTP_ADDR=127.0.0.1:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v /persistent/tas3:/state \
   ghcr.io/outout14/traefik-acme-s3:main renew
 ```
