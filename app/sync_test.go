@@ -293,3 +293,97 @@ var _ certStore = (*mockStoreWithRetrieve)(nil)
 func (m *mockStoreWithRetrieve) StoreCertificate(cert certificate.Resource) error {
 	return m.mockStore.StoreCertificate(cert)
 }
+
+func TestWriteHAProxyConfigDisabled(t *testing.T) {
+	store := newMockStore()
+	store.index.CertIndex["ha.com"] = certcloset.CertificateEntry{Domain: "ha.com"}
+	a := &App{closet: store}
+	cfg := SyncConfig{}
+	// HAProxy.CertDir empty → no-op
+	if err := a.writeHAProxyConfig(cfg); err != nil {
+		t.Fatalf("writeHAProxyConfig: %v", err)
+	}
+}
+
+func TestWriteHAProxyConfigBundlesOnly(t *testing.T) {
+	dir := t.TempDir()
+	localStore := t.TempDir()
+
+	// Write separate cert+key files as syncCerts would.
+	certDir := filepath.Join(localStore, "ha.com")
+	if err := os.MkdirAll(certDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, CERT_EXT), []byte("CERT"), 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, KEY_EXT), []byte("KEY"), 0644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	store := newMockStore()
+	store.index.CertIndex["ha.com"] = certcloset.CertificateEntry{Domain: "ha.com"}
+	a := &App{closet: store}
+
+	cfg := SyncConfig{}
+	cfg.Traefik.LocalStore = localStore
+	cfg.HAProxy.CertDir = dir
+
+	if err := a.writeHAProxyConfig(cfg); err != nil {
+		t.Fatalf("writeHAProxyConfig: %v", err)
+	}
+
+	bundle, err := os.ReadFile(filepath.Join(dir, "ha.com.pem"))
+	if err != nil {
+		t.Fatalf("bundle not written: %v", err)
+	}
+	if string(bundle) != "CERTKEY" {
+		t.Errorf("bundle content mismatch: %q", bundle)
+	}
+}
+
+func TestWriteHAProxyConfigCrtList(t *testing.T) {
+	dir := t.TempDir()
+	localStore := t.TempDir()
+	crtListPath := filepath.Join(dir, "crt-list.txt")
+
+	for _, domain := range []string{"a.com", "b.com"} {
+		d := filepath.Join(localStore, domain)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, CERT_EXT), []byte("CERT"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, KEY_EXT), []byte("KEY"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := newMockStore()
+	store.index.CertIndex["a.com"] = certcloset.CertificateEntry{Domain: "a.com"}
+	store.index.CertIndex["b.com"] = certcloset.CertificateEntry{Domain: "b.com"}
+	a := &App{closet: store}
+
+	cfg := SyncConfig{}
+	cfg.Traefik.LocalStore = localStore
+	cfg.HAProxy.CertDir = dir
+	cfg.HAProxy.CrtListFile = crtListPath
+	cfg.HAProxy.CertDirRef = "/etc/haproxy/certs"
+
+	if err := a.writeHAProxyConfig(cfg); err != nil {
+		t.Fatalf("writeHAProxyConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(crtListPath)
+	if err != nil {
+		t.Fatalf("crt-list not written: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "/etc/haproxy/certs/a.com.pem a.com") {
+		t.Errorf("crt-list missing a.com entry:\n%s", content)
+	}
+	if !strings.Contains(content, "/etc/haproxy/certs/b.com.pem b.com") {
+		t.Errorf("crt-list missing b.com entry:\n%s", content)
+	}
+}

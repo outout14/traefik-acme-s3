@@ -68,10 +68,15 @@ type RenewConfig struct {
 
 type SyncConfig struct {
 	Traefik struct {
-		LocalStore     string `env:"TRAEFIK_LOCAL_STORE" required:"" help:"Where to store the certificates."`
-		ConfigFile     string `env:"TRAEFIK_OUTPUT_FILE" required:"" help:"The traefik configuration filename dynamically generated that will contains all the certificates definitions."`
-		Format         string `env:"TRAEFIK_OUTPUT_FORMAT" required:"" default:"toml" help:"The format to store the outputed configuration."`
-		CertificateDir string `env:"TRAEFIK_CERTIFICATE_DIR" required:"" help:"Where the certificates are stored relative to traefik."`
+		LocalStore     string `env:"TRAEFIK_LOCAL_STORE" required:"" help:"Where to store the certificates (also used as local cert cache for HAProxy sync)."`
+		ConfigFile     string `env:"TRAEFIK_OUTPUT_FILE" default:"" help:"Traefik dynamic config file to generate. Empty = Traefik config not written."`
+		Format         string `env:"TRAEFIK_OUTPUT_FORMAT" default:"toml" help:"Format for the Traefik config file (toml or yaml)."`
+		CertificateDir string `env:"TRAEFIK_CERTIFICATE_DIR" default:"" help:"Cert dir as Traefik sees it (for config file paths). Required when TRAEFIK_OUTPUT_FILE is set."`
 	} `embed:"" prefix:"traefik." help:"Traefik configuration."`
+	HAProxy struct {
+		CertDir     string `env:"HAPROXY_CRT_DIR" default:"" help:"Directory where HAProxy PEM bundles (cert+key) are written. Empty = HAProxy sync disabled."`
+		CrtListFile string `env:"HAPROXY_CRT_LIST_FILE" default:"" help:"Path to HAProxy crt-list file to generate. Empty = no crt-list written."`
+		CertDirRef  string `env:"HAPROXY_CRT_DIR_REF" default:"" help:"Cert dir as HAProxy sees it in crt-list paths. Defaults to HAPROXY_CRT_DIR if empty."`
+	} `embed:"" prefix:"haproxy." help:"HAProxy configuration (optional)."`
 	DaemonConfig `embed:""`
 }
