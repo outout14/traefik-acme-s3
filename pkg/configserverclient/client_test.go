@@ -78,3 +78,24 @@ func TestNewEmptyURL(t *testing.T) {
 		t.Fatal("expected error for empty URL")
 	}
 }
+
+func TestGetDomainsSendsBearerToken(t *testing.T) {
+	const token = "super-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("unexpected auth header: %q", got)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "fqdn": "a.com", "url": "http://a"},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{URL: srv.URL, Token: token})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := c.GetDomains(); err != nil {
+		t.Fatalf("GetDomains: %v", err)
+	}
+}
