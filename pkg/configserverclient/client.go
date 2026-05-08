@@ -13,6 +13,7 @@ type Config struct {
 	URL     string `env:"CONFIG_SERVER_URL" default:"" help:"Base URL of the traefik config-server (e.g. http://config-server:8000). Empty = disabled."`
 	Node    string `env:"CONFIG_SERVER_NODE" default:"" help:"Node name to filter backends (e.g. lb-edge-par01). Empty = all backends."`
 	Timeout int    `env:"CONFIG_SERVER_TIMEOUT" default:"5" help:"HTTP timeout in seconds for config-server requests."`
+	Token   string `env:"CONFIG_SERVER_API_TOKEN" default:"" help:"Bearer token used for config-server authentication (optional)."`
 }
 
 type Client struct {
@@ -50,7 +51,15 @@ func (c *Client) GetDomains() ([]string, error) {
 		endpoint = fmt.Sprintf("%s/api/v1/backends", c.cfg.URL)
 	}
 
-	resp, err := c.httpClient.Get(endpoint)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("config-server request build failed: %w", err)
+	}
+	if c.cfg.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	}
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("config-server request failed: %w", err)
 	}
