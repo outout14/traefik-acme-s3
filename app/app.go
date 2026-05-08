@@ -54,14 +54,15 @@ type dnsUpdater interface {
 }
 
 type App struct {
-	buckcert   certRequester
-	closet     certStore
-	state      stateStore
-	traefikApi domainProvider
-	lokiWriter *lokiwriter.Writer
-	dnsUpdate  dnsUpdater
-	metrics    *appMetrics
-	config     Config
+	buckcert        certRequester
+	closet          certStore
+	state           stateStore
+	traefikApi      domainProvider
+	configServerApi domainProvider
+	lokiWriter      *lokiwriter.Writer
+	dnsUpdate       dnsUpdater
+	metrics         *appMetrics
+	config          Config
 
 	mu        sync.Mutex // protects lastRenew / lastSync
 	lastRenew time.Time

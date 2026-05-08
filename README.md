@@ -1,16 +1,19 @@
 # TAS3 — Traefik ACME S3
 
-TAS3 obtains TLS certificates via Let's Encrypt (ACME HTTP-01) and stores them encrypted in S3. A companion `sync` command downloads them to disk and generates the Traefik dynamic TLS config.
+TAS3 obtains TLS certificates via Let's Encrypt (ACME HTTP-01) and stores them encrypted in S3. A companion `sync` command downloads them to disk and generates dynamic TLS config for Traefik and/or HAProxy.
 
 ## Commands
 
 ### `renew`
 
-Discovers domains from Traefik's router API and/or `DOMAINS`, requests certificates via ACME HTTP-01 (challenge files served from S3), stores them encrypted in S3, and persists the index.
+Discovers domains from Traefik's router API, the traefik config-server API, and/or `DOMAINS`, requests certificates via ACME HTTP-01 (challenge files served from S3), stores them encrypted in S3, and persists the index.
 
 ### `sync`
 
-Diffs the S3 index against the local copy, downloads changed certificates, and writes a Traefik dynamic config file (`tls.certificates[]`).
+Diffs the S3 index against the local copy, downloads changed certificates, and writes output config for any enabled backends:
+
+- **Traefik** — dynamic config file (`tls.certificates[]`, TOML or YAML). Optional; enabled by setting `TRAEFIK_OUTPUT_FILE`.
+- **HAProxy** — per-domain PEM bundles (cert + key concatenated) and optional `crt-list` file. Optional; enabled by setting `HAPROXY_CRT_DIR`.
 
 ## Environment variables
 
@@ -54,15 +57,42 @@ TAS3 uses the AWS SDK default config chain — no custom S3 flags. Set these sta
 | `TRAEFIK_API_PASSWORD` | `--traefik.password` | — | Traefik API basic auth password |
 | `TRAEFIK_API_TIMEOUT` | `--traefik.timeout` | `5` | Traefik API request timeout (seconds) |
 | `TRAEFIK_API_INSECURE` | `--traefik.insecure` | `false` | Skip TLS verification for Traefik API |
+| `CONFIG_SERVER_URL` | `--config-server.url` | — | traefik config-server base URL (optional, e.g. `http://config-server:8000`) |
+| `CONFIG_SERVER_NODE` | `--config-server.node` | — | Filter config-server backends to this node name. Empty = all backends |
+| `CONFIG_SERVER_TIMEOUT` | `--config-server.timeout` | `5` | Config-server request timeout (seconds) |
 
 ### `sync`
 
+#### Local cert store (required)
+
 | Variable | Flag | Description |
 |---|---|---|
-| `TRAEFIK_LOCAL_STORE` | `--traefik.local-store` | Local directory to write certificates |
-| `TRAEFIK_OUTPUT_FILE` | `--traefik.config-file` | Path for the generated Traefik dynamic config |
-| `TRAEFIK_OUTPUT_FORMAT` | `--traefik.format` | `toml` or `yaml` |
-| `TRAEFIK_CERTIFICATE_DIR` | `--traefik.certificate-dir` | Certificate path prefix written into the config file |
+| `TRAEFIK_LOCAL_STORE` | `--traefik.local-store` | Local directory where certificates are cached (`<domain>/cert.pem` + `key.pem`) |
+
+#### Traefik output (optional)
+
+Enabled when `TRAEFIK_OUTPUT_FILE` is set.
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `TRAEFIK_OUTPUT_FILE` | `--traefik.config-file` | — | Path for the generated Traefik dynamic config |
+| `TRAEFIK_OUTPUT_FORMAT` | `--traefik.format` | `toml` | `toml` or `yaml` |
+| `TRAEFIK_CERTIFICATE_DIR` | `--traefik.certificate-dir` | — | Certificate path prefix written into the config file |
+
+#### HAProxy output (optional)
+
+Enabled when `HAPROXY_CRT_DIR` is set. Writes one `<domain>.pem` bundle (cert + key concatenated, mode 0600) per domain.
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `HAPROXY_CRT_DIR` | `--haproxy.cert-dir` | — | Directory to write HAProxy PEM bundles |
+| `HAPROXY_CRT_LIST_FILE` | `--haproxy.crt-list-file` | — | Path for the generated `crt-list` file. Empty = no crt-list written |
+| `HAPROXY_CRT_DIR_REF` | `--haproxy.cert-dir-ref` | `HAPROXY_CRT_DIR` | Cert dir as HAProxy sees it in crt-list paths (useful when the path differs inside the HAProxy container) |
+
+HAProxy config example:
+```
+bind *:443 ssl crt-list /etc/haproxy/crt-list.txt
+```
 
 ### Daemon mode (both commands)
 

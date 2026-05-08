@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
@@ -92,7 +94,62 @@ func (a *App) syncCerts(cfg SyncConfig) error {
 	return localCloset.SaveIndex()
 }
 
+func (a *App) writeHAProxyConfig(cfg SyncConfig) error {
+	if cfg.HAProxy.CertDir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(cfg.HAProxy.CertDir, 0755); err != nil {
+		return fmt.Errorf("create haproxy cert dir: %w", err)
+	}
+
+	refDir := cfg.HAProxy.CertDirRef
+	if refDir == "" {
+		refDir = cfg.HAProxy.CertDir
+	}
+
+	var crtListLines []string
+
+	for domain := range a.closet.GetIndex().CertIndex {
+		certData, err := os.ReadFile(filepath.Join(cfg.Traefik.LocalStore, domain, CERT_EXT))
+		if err != nil {
+			log.Error().Err(err).Str("domain", domain).Msg("HAProxy: cannot read cert file")
+			continue
+		}
+		keyData, err := os.ReadFile(filepath.Join(cfg.Traefik.LocalStore, domain, KEY_EXT))
+		if err != nil {
+			log.Error().Err(err).Str("domain", domain).Msg("HAProxy: cannot read key file")
+			continue
+		}
+
+		bundle := append(certData, keyData...)
+		bundlePath := filepath.Join(cfg.HAProxy.CertDir, domain+".pem")
+		if err := atomicWrite(bundlePath, bundle, 0600); err != nil {
+			log.Error().Err(err).Str("domain", domain).Msg("HAProxy: cannot write bundle")
+			continue
+		}
+
+		if cfg.HAProxy.CrtListFile != "" {
+			crtListLines = append(crtListLines, filepath.Join(refDir, domain+".pem")+" "+domain)
+		}
+	}
+
+	if cfg.HAProxy.CrtListFile != "" {
+		sort.Strings(crtListLines)
+		content := strings.Join(crtListLines, "\n") + "\n"
+		if err := atomicWrite(cfg.HAProxy.CrtListFile, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write haproxy crt-list: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func (a *App) writeTraefikConfig(cfg SyncConfig) error {
+	if cfg.Traefik.ConfigFile == "" {
+		return nil
+	}
+
 	tcfg := traefikclient.TraefikRootConfig{
 		Tls: traefikclient.TraefikTLS{
 			Certificates: make([]traefikclient.TraefikCertificate, 0),
@@ -144,6 +201,13 @@ func (a *App) Sync(cfg SyncConfig) error {
 	}
 
 	if err := a.writeTraefikConfig(cfg); err != nil {
+		if a.metrics != nil {
+			a.metrics.syncTotal.WithLabelValues("fail").Inc()
+		}
+		return err
+	}
+
+	if err := a.writeHAProxyConfig(cfg); err != nil {
 		if a.metrics != nil {
 			a.metrics.syncTotal.WithLabelValues("fail").Inc()
 		}

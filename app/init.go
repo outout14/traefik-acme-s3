@@ -6,6 +6,7 @@ import (
 
 	"github.com/outout14/traefik-acme-s3/pkg/buckcert"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
+	"github.com/outout14/traefik-acme-s3/pkg/configserverclient"
 	"github.com/outout14/traefik-acme-s3/pkg/dnsupdate"
 	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
@@ -71,6 +72,18 @@ func (a *App) initTraefikClient(cfg traefikclient.ApiConfig) {
 	a.traefikApi = tc
 
 	log.Debug().Msg("Traefik client initialized")
+}
+
+func (a *App) initConfigServerClient(cfg configserverclient.Config) {
+	if a.configServerApi != nil {
+		return // already set (e.g. injected in tests)
+	}
+	c, err := configserverclient.New(cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Unable to initialize config-server client")
+	}
+	a.configServerApi = c
+	log.Debug().Str("url", cfg.URL).Str("node", cfg.Node).Msg("Config-server client initialized")
 }
 
 func (a *App) initCertCloset() {
