@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
-	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
 )
 
 // certStore is the interface App uses for certificate storage.
@@ -22,6 +21,7 @@ type certStore interface {
 // stateStore is the interface App uses for failure/rollover state and distributed locking.
 type stateStore interface {
 	AcquireLock() error
+	RefreshLock() error
 	ReleaseLock()
 	LoadFailureState() (*certcloset.FailureState, error)
 	StoreFailureState(*certcloset.FailureState) error
@@ -59,7 +59,6 @@ type App struct {
 	state           stateStore
 	traefikApi      domainProvider
 	configServerApi domainProvider
-	lokiWriter      *lokiwriter.Writer
 	dnsUpdate       dnsUpdater
 	metrics         *appMetrics
 	config          Config
@@ -69,12 +68,8 @@ type App struct {
 	lastSync  time.Time
 }
 
-// Close flushes the Loki writer if active. Call after Renew/Sync completes.
-func (a *App) Close() {
-	if a.lokiWriter != nil {
-		a.lokiWriter.Close()
-	}
-}
+// Close releases application resources. Call after Renew/Sync completes.
+func (a *App) Close() {}
 
 func (a *App) Init(config Config) {
 	a.config = config

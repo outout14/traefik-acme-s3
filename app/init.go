@@ -8,7 +8,6 @@ import (
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
 	"github.com/outout14/traefik-acme-s3/pkg/configserverclient"
 	"github.com/outout14/traefik-acme-s3/pkg/dnsupdate"
-	"github.com/outout14/traefik-acme-s3/pkg/lokiwriter"
 	"github.com/outout14/traefik-acme-s3/pkg/traefikclient"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -27,21 +26,10 @@ func (a *App) initLog() {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
-	if a.config.LokiURL != "" {
-		lw := lokiwriter.New(a.config.LokiURL, map[string]string{
-			"app": a.config.LokiApp,
-		})
-		a.lokiWriter = lw
-		writers = append(writers, lw)
-	}
-
 	log.Logger = zerolog.New(zerolog.MultiLevelWriter(writers...)).With().Timestamp().Logger()
 
 	if a.config.Debug {
 		log.Debug().Msg("debug mode enabled")
-	}
-	if a.config.LokiURL != "" {
-		log.Debug().Str("url", a.config.LokiURL).Msg("Loki writer active")
 	}
 }
 
@@ -49,8 +37,10 @@ func (a *App) initBuckcert(cfg buckcert.Config) {
 	if a.buckcert != nil {
 		return // already set (e.g. injected in tests)
 	}
-	if cfg.UserKeyPath == "./le_user.json" {
-		log.Warn().Msg("UserKeyPath is the default './le_user.json' — ACME registration will be lost on container restart. Mount a persistent volume and set LETSENCRYPT_USER_KEY_PATH.")
+	if store, ok := a.closet.(buckcert.UserStore); ok {
+		cfg.UserStore = store
+	} else if cfg.UserKeyPath == "./le_user.json" {
+		log.Warn().Msg("UserKeyPath is the default './le_user.json' and no S3 user store is available — ACME registration will be lost on container restart")
 	}
 	bc, err := buckcert.NewBuckcert(cfg)
 	if err != nil {

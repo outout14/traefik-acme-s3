@@ -181,3 +181,26 @@ func TestGetDomainsEmptyList(t *testing.T) {
 		t.Fatalf("want 0 domains got %d", len(domains))
 	}
 }
+
+func TestGetDomainsMultiHostRule(t *testing.T) {
+	routers := []TraefikRouter{
+		{Rule: `Host("a.example.com","b.example.com")`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(routers)
+	}))
+	defer ts.Close()
+
+	c, err := NewTraefikApiClient(ApiConfig{Url: ts.URL, Timeout: 5})
+	if err != nil {
+		t.Fatalf("NewTraefikApiClient: %v", err)
+	}
+	domains, err := c.GetDomains()
+	if err != nil {
+		t.Fatalf("GetDomains: %v", err)
+	}
+	if len(domains) != 2 || domains[0] != "a.example.com" || domains[1] != "b.example.com" {
+		t.Fatalf("unexpected domains: %v", domains)
+	}
+}

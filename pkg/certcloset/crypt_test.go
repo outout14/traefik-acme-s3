@@ -2,8 +2,28 @@ package certcloset
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"io"
 	"testing"
 )
+
+func encryptAESLegacyCBCForTest(key []byte, text []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	iv := make([]byte, aes.BlockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+	text = padPKCS7(text, aes.BlockSize)
+	ciphertext := make([]byte, len(text))
+	mode := cipher.NewCBCEncrypter(block, iv)
+	mode.CryptBlocks(ciphertext, text)
+	return append(iv, ciphertext...), nil
+}
 
 func TestPadUnpadRoundTrip(t *testing.T) {
 	cases := []struct {
@@ -101,6 +121,45 @@ func TestEncryptProducesRandomIV(t *testing.T) {
 	// IV is random so ciphertexts differ
 	if bytes.Equal(c1, c2) {
 		t.Fatal("two encryptions of same plaintext must produce different ciphertexts")
+	}
+}
+
+func TestEncryptAddsGCMEnvelopeMagic(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	ciphertext, err := encryptAES(key, []byte("hello"))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if len(ciphertext) < len(gcmEnvelopeMagic) || !bytes.Equal(ciphertext[:len(gcmEnvelopeMagic)], gcmEnvelopeMagic) {
+		t.Fatal("ciphertext must start with GCM envelope magic")
+	}
+}
+
+func TestDecryptAESLegacyCBCCompat(t *testing.T) {
+	key := bytes.Repeat([]byte{0x0A}, 32)
+	plaintext := []byte("legacy-cbc-payload")
+	legacyCipher, err := encryptAESLegacyCBCForTest(key, plaintext)
+	if err != nil {
+		t.Fatalf("encrypt legacy: %v", err)
+	}
+	got, err := decryptAES(key, legacyCipher)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatalf("want %q got %q", plaintext, got)
+	}
+}
+
+func TestDecryptAESGCMTamperFails(t *testing.T) {
+	key := bytes.Repeat([]byte{0x22}, 32)
+	ciphertext, err := encryptAES(key, []byte("tamper-me"))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	ciphertext[len(ciphertext)-1] ^= 0x01
+	if _, err := decryptAES(key, ciphertext); err == nil {
+		t.Fatal("expected decrypt error for tampered ciphertext")
 	}
 }
 

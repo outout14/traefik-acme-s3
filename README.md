@@ -22,9 +22,7 @@ Diffs the S3 index against the local copy, downloads changed certificates, and w
 | Variable | Flag | Default | Description |
 |---|---|---|---|
 | `DEBUG` | `--debug` | `false` | Enable debug logging |
-| `LOKI_URL` | `--loki-url` | `` | Loki push URL (disabled if empty) |
-| `LOKI_APP` | `--loki-app` | `tas3` | Value for the `app` Loki label |
-| `CLOSET_PASSWORD` | `--closet.password` | — | AES-256 encryption key for private keys |
+| `CLOSET_PASSWORD` | `--closet.password` | — | AES-256 encryption key for private keys and the ACME account |
 | `CLOSET_BUCKET` | `--closet.bucket` | — | S3 bucket for certs and index |
 | `CLOSET_PUSH_PRIVATE_KEY` | `--closet.push-private-key` | `true` | Store private key encrypted in S3 |
 
@@ -47,10 +45,11 @@ TAS3 uses the AWS SDK default config chain — no custom S3 flags. Set these sta
 | `LETSENCRYPT_CA_URL` | `--letsencrypt.ca-url` | LE staging | ACME directory URL |
 | `LETSENCRYPT_KEY_TYPE` | `--letsencrypt.key-type` | `P256` | Key type: P256, P384, RSA2048, RSA4096, RSA8192 |
 | `LETSENCRYPT_BUCKET` | `--letsencrypt.challenge-bucket` | — | S3 bucket for HTTP-01 challenge files |
-| `LETSENCRYPT_USER_KEY_PATH` | `--letsencrypt.user-key-path` | `./le_user.json` | **Must point to a persistent path** — stores ACME account key and registration |
+| `LETSENCRYPT_USER_KEY_PATH` | `--letsencrypt.user-key-path` | `./le_user.json` | Legacy ACME account file path. Imported into encrypted S3 account storage when S3 is empty |
 | `DOMAINS` | `--domains` | — | Extra domains beyond Traefik API |
 | `IGNORED_DOMAINS` | `--ignored-domains` | — | Domains to skip |
 | `TAS3_FAILURE_BACKOFF_MINUTES` | `--failure-backoff-minutes` | `60` | Minutes to skip a domain after renewal failure |
+| `TAS3_FORCE_RENEW_ON_FAILURE` | `--force-renew-on-failure` | `false` | If `true`, bypass failure backoff and still attempt renewals |
 | `TAS3_REQUEST_DELAY_SECONDS` | `--request-delay-seconds` | `3` | Delay between certificate requests |
 | `TRAEFIK_API_URL` | `--traefik.url` | — | Traefik API base URL (optional) |
 | `TRAEFIK_API_USERNAME` | `--traefik.username` | — | Traefik API basic auth username |
@@ -130,13 +129,16 @@ When enabled, TAS3 publishes TLSA and CAA records via RFC 2136 DNS UPDATE after 
 | `DNS_UPDATE_TLSA_TTL_SECONDS` | `3600` | Seconds to wait after pre-publishing new TLSA before switching cert |
 | `DNS_UPDATE_SYNC_LAG_SECONDS` | `300` | Seconds to wait after cert switch before removing old TLSA |
 
-## Persistent volumes
+## Persistent state
 
-One path **must** be on a persistent volume in container deployments:
+TAS3 stores operational state in the closet S3 bucket alongside certificates:
 
-- **`LETSENCRYPT_USER_KEY_PATH`** — the ACME account key and registration. If lost, TAS3 re-registers a new account on every start, which will hit Let's Encrypt rate limits.
+- certificate index
+- encrypted certificates and private keys
+- encrypted ACME account key and registration (`state/acme_user.json.enc`)
+- failure backoff, TLSA rollover progress, pending rollover keys, and distributed lock state
 
-All other state (failure backoff, TLSA rollover progress, distributed lock) is stored in S3 alongside the certificates.
+If `LETSENCRYPT_USER_KEY_PATH` exists and the S3 ACME account object does not, TAS3 imports that local account into encrypted S3 storage. After that, S3 is the source of truth.
 
 ## S3 HTTP-01 challenge
 
@@ -163,9 +165,7 @@ docker run --rm \
   -e LETSENCRYPT_EMAIL=admin@example.com \
   -e LETSENCRYPT_CA_URL=https://acme-v02.api.letsencrypt.org/directory \
   -e LETSENCRYPT_BUCKET=my-acme-challenges \
-  -e LETSENCRYPT_USER_KEY_PATH=/state/le_user.json \
   -e DOMAINS=example.com,www.example.com \
-  -v /persistent/tas3:/state \
   ghcr.io/outout14/traefik-acme-s3:main renew
 ```
 
@@ -182,12 +182,10 @@ docker run -d \
   -e LETSENCRYPT_EMAIL=admin@example.com \
   -e LETSENCRYPT_CA_URL=https://acme-v02.api.letsencrypt.org/directory \
   -e LETSENCRYPT_BUCKET=my-acme-challenges \
-  -e LETSENCRYPT_USER_KEY_PATH=/state/le_user.json \
   -e DOMAINS=example.com,www.example.com \
   -e TAS3_INTERVAL=12h \
   -e TAS3_HTTP_ADDR=127.0.0.1:8080 \
   -p 127.0.0.1:8080:8080 \
-  -v /persistent/tas3:/state \
   ghcr.io/outout14/traefik-acme-s3:main renew
 ```
 

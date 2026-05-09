@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const (
-	failureStateKey = "state/failures.json"
-	rolloverPrefix  = "state/rollover/"
+	failureStateKey  = "state/failures.json"
+	rolloverPrefix   = "state/rollover/"
 	pendingKeyPrefix = "state/pending/"
+	acmeUserKey      = "state/acme_user.json.enc"
 )
 
 // FailureState tracks the last failure time per domain.
@@ -32,7 +35,7 @@ const (
 // RolloverState persists the TLSA rollover progress for one domain.
 type RolloverState struct {
 	Phase          RolloverPhase `json:"phase"`
-	OldTLSAHex     string        `json:"old_tlsa_hex"`      // empty if no prior cert or wildcard
+	OldTLSAHex     string        `json:"old_tlsa_hex"` // empty if no prior cert or wildcard
 	NewTLSAHex     string        `json:"new_tlsa_hex"`
 	PhaseStartedAt time.Time     `json:"phase_started_at"`
 	TLSATTLSeconds int           `json:"tlsa_ttl_seconds"`
@@ -52,6 +55,7 @@ func (c *CertCloset) LoadFailureState() (*FailureState, error) {
 		}
 		return nil, fmt.Errorf("load failure state: %w", err)
 	}
+	defer out.Body.Close()
 	var s FailureState
 	if err := json.NewDecoder(out.Body).Decode(&s); err != nil {
 		return nil, fmt.Errorf("decode failure state: %w", err)
@@ -76,6 +80,68 @@ func (c *CertCloset) StoreFailureState(state *FailureState) error {
 	return err
 }
 
+// LoadACMEUser reads and decrypts the persisted ACME account user JSON from S3.
+// exists=false means no S3-backed ACME user has been stored yet.
+func (c *CertCloset) LoadACMEUser() ([]byte, bool, error) {
+	out, err := c.s3.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    strPtr(acmeUserKey),
+	})
+	if err != nil {
+		if IsErrNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("load ACME user: %w", err)
+	}
+	defer out.Body.Close()
+
+	encrypted, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("read ACME user: %w", err)
+	}
+	plain, err := decryptAES(c.deriveKey(), encrypted)
+	if err != nil {
+		return nil, false, fmt.Errorf("decrypt ACME user: %w", err)
+	}
+	return plain, true, nil
+}
+
+// StoreACMEUser encrypts and writes the ACME account user JSON to S3.
+func (c *CertCloset) StoreACMEUser(data []byte) error {
+	encrypted, err := encryptAES(c.deriveKey(), data)
+	if err != nil {
+		return fmt.Errorf("encrypt ACME user: %w", err)
+	}
+	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    strPtr(acmeUserKey),
+		Body:   bytes.NewReader(encrypted),
+	})
+	return err
+}
+
+// StoreACMEUserIfNotExists encrypts and writes the ACME user only when no S3
+// object exists yet. It returns stored=false if another instance won the race.
+func (c *CertCloset) StoreACMEUserIfNotExists(data []byte) (bool, error) {
+	encrypted, err := encryptAES(c.deriveKey(), data)
+	if err != nil {
+		return false, fmt.Errorf("encrypt ACME user: %w", err)
+	}
+	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      &c.config.Bucket,
+		Key:         strPtr(acmeUserKey),
+		Body:        bytes.NewReader(encrypted),
+		IfNoneMatch: strPtr("*"),
+	})
+	if err != nil {
+		if isErrHTTPStatus(err, http.StatusConflict) || isErrHTTPStatus(err, http.StatusPreconditionFailed) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // LoadRolloverState returns the rollover state for domain.
 // exists=false when no rollover is in progress.
 func (c *CertCloset) LoadRolloverState(domain string) (*RolloverState, bool, error) {
@@ -90,6 +156,7 @@ func (c *CertCloset) LoadRolloverState(domain string) (*RolloverState, bool, err
 		}
 		return nil, false, fmt.Errorf("load rollover state for %s: %w", domain, err)
 	}
+	defer out.Body.Close()
 	var rs RolloverState
 	if err := json.NewDecoder(out.Body).Decode(&rs); err != nil {
 		return nil, false, fmt.Errorf("decode rollover state for %s: %w", domain, err)
@@ -150,6 +217,7 @@ func (c *CertCloset) LoadPendingKey(domain string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load pending key for %s: %w", domain, err)
 	}
+	defer out.Body.Close()
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(out.Body); err != nil {
 		return nil, fmt.Errorf("read pending key: %w", err)

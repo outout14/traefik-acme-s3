@@ -10,9 +10,9 @@ import (
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/outout14/traefik-acme-s3/pkg/certcloset"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 func TestWriteCertificate(t *testing.T) {
@@ -44,6 +44,27 @@ func TestWriteCertificate(t *testing.T) {
 	}
 	if string(keyData) != "KEY-PEM-DATA" {
 		t.Errorf("key content mismatch: %q", keyData)
+	}
+
+	keyStat, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if keyStat.Mode().Perm() != 0600 {
+		t.Fatalf("key mode want 0600 got %o", keyStat.Mode().Perm())
+	}
+}
+
+func TestWriteCertificateUnsafeDomain(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{}
+	cert := &certcloset.Certificate{
+		Domain:      "../escape",
+		Certificate: []byte("CERT"),
+		PrivateKey:  []byte("KEY"),
+	}
+	if err := a.writeCertificate(dir, cert); err == nil {
+		t.Fatal("expected error for unsafe domain")
 	}
 }
 
@@ -104,6 +125,37 @@ func TestWriteTraefikConfigYAML(t *testing.T) {
 	}
 }
 
+func TestWriteTraefikConfigSkipsUnsafeDomain(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "traefik.toml")
+
+	store := newMockStore()
+	store.index.CertIndex["ok.com"] = certcloset.CertificateEntry{Domain: "ok.com"}
+	store.index.CertIndex["../evil"] = certcloset.CertificateEntry{Domain: "../evil"}
+
+	a := &App{closet: store}
+	cfg := SyncConfig{}
+	cfg.Traefik.ConfigFile = cfgFile
+	cfg.Traefik.Format = "toml"
+	cfg.Traefik.CertificateDir = "/certs"
+
+	if err := a.writeTraefikConfig(cfg); err != nil {
+		t.Fatalf("writeTraefikConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(cfgFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ok.com") {
+		t.Fatalf("config missing safe domain: %s", content)
+	}
+	if strings.Contains(content, "../evil") {
+		t.Fatalf("config must not include unsafe domain: %s", content)
+	}
+}
+
 func TestWriteTraefikConfigUnsupportedFormat(t *testing.T) {
 	dir := t.TempDir()
 	store := newMockStore()
@@ -114,6 +166,20 @@ func TestWriteTraefikConfigUnsupportedFormat(t *testing.T) {
 
 	if err := a.writeTraefikConfig(cfg); err == nil {
 		t.Fatal("expected error for unsupported format")
+	}
+}
+
+func TestWriteTraefikConfigMissingCertificateDir(t *testing.T) {
+	dir := t.TempDir()
+	store := newMockStore()
+	a := &App{closet: store}
+	cfg := SyncConfig{}
+	cfg.Traefik.ConfigFile = filepath.Join(dir, "traefik.toml")
+	cfg.Traefik.Format = "toml"
+	cfg.Traefik.CertificateDir = ""
+
+	if err := a.writeTraefikConfig(cfg); err == nil {
+		t.Fatal("expected error when certificate dir is empty and traefik output is enabled")
 	}
 }
 
@@ -132,9 +198,16 @@ func TestSyncCertsNoDiff(t *testing.T) {
 	cfg.Traefik.LocalStore = localDir
 
 	// Pre-populate local index with same entry so diff is empty.
-	// Also create the cert directory so CheckIntegrity does not flag it.
-	if err := os.MkdirAll(filepath.Join(localDir, "nodiff.com"), 0755); err != nil {
+	// Also create the cert+key files so CheckIntegrity does not flag it.
+	certDir := filepath.Join(localDir, "nodiff.com")
+	if err := os.MkdirAll(certDir, 0755); err != nil {
 		t.Fatalf("mkdir cert dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, CERT_EXT), []byte("CERT"), 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, KEY_EXT), []byte("KEY"), 0600); err != nil {
+		t.Fatalf("write key: %v", err)
 	}
 	lc, err := certcloset.NewLocalCertCloset(certcloset.Config{}, localDir)
 	if err != nil {
@@ -280,9 +353,82 @@ func TestSyncCertsRetrieveError(t *testing.T) {
 	cfg := SyncConfig{}
 	cfg.Traefik.LocalStore = localDir
 
-	// syncCerts should not return an error for a per-cert retrieve failure
+	if err := a.syncCerts(cfg); err == nil {
+		t.Fatal("syncCerts must fail when a certificate cannot be retrieved")
+	}
+}
+
+func TestSyncCertsWriteFailureDoesNotAdvanceLocalIndex(t *testing.T) {
+	localDir := t.TempDir()
+	exp := time.Now().AddDate(1, 0, 0)
+
+	store := newMockStore()
+	store.index.CertIndex["../evil"] = certcloset.CertificateEntry{
+		Domain: "../evil", ExpirationDate: exp,
+	}
+	store.retrieveMap["../evil"] = &certcloset.Certificate{
+		Domain:      "../evil",
+		Certificate: []byte("CERT"),
+		PrivateKey:  []byte("KEY"),
+	}
+
+	a := &App{closet: store, config: Config{}}
+	cfg := SyncConfig{}
+	cfg.Traefik.LocalStore = localDir
+
+	if err := a.syncCerts(cfg); err == nil {
+		t.Fatal("syncCerts must fail when a certificate cannot be written")
+	}
+
+	local, err := certcloset.NewLocalCertCloset(certcloset.Config{}, localDir)
+	if err != nil {
+		t.Fatalf("NewLocalCertCloset: %v", err)
+	}
+	if _, ok := local.GetIndex().CertIndex["../evil"]; ok {
+		t.Fatal("failed write must not advance local index")
+	}
+}
+
+func TestSyncCertsRemovesLocalOnlyEntry(t *testing.T) {
+	localDir := t.TempDir()
+	exp := time.Now().AddDate(1, 0, 0)
+
+	certDir := filepath.Join(localDir, "old.com")
+	if err := os.MkdirAll(certDir, 0755); err != nil {
+		t.Fatalf("mkdir cert dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, CERT_EXT), []byte("OLD-CERT"), 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, KEY_EXT), []byte("OLD-KEY"), 0600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	local, err := certcloset.NewLocalCertCloset(certcloset.Config{}, localDir)
+	if err != nil {
+		t.Fatalf("NewLocalCertCloset: %v", err)
+	}
+	local.GetIndex().Add(certcloset.CertificateEntry{Domain: "old.com", ExpirationDate: exp})
+	if err := local.SaveIndex(); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
+
+	a := &App{closet: newMockStore(), config: Config{}}
+	cfg := SyncConfig{}
+	cfg.Traefik.LocalStore = localDir
+
 	if err := a.syncCerts(cfg); err != nil {
 		t.Fatalf("syncCerts: %v", err)
+	}
+
+	localAfter, err := certcloset.NewLocalCertCloset(certcloset.Config{}, localDir)
+	if err != nil {
+		t.Fatalf("NewLocalCertCloset after sync: %v", err)
+	}
+	if _, ok := localAfter.GetIndex().CertIndex["old.com"]; ok {
+		t.Fatal("local-only index entry must be removed")
+	}
+	if _, err := os.Stat(certDir); !os.IsNotExist(err) {
+		t.Fatalf("local-only certificate directory must be removed, stat err=%v", err)
 	}
 }
 
@@ -337,8 +483,16 @@ func TestWriteHAProxyConfigBundlesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle not written: %v", err)
 	}
-	if string(bundle) != "CERTKEY" {
+	if string(bundle) != "CERT\nKEY" {
 		t.Errorf("bundle content mismatch: %q", bundle)
+	}
+
+	info, err := os.Stat(filepath.Join(dir, "ha.com.pem"))
+	if err != nil {
+		t.Fatalf("stat bundle: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("bundle mode want 0600 got %o", info.Mode().Perm())
 	}
 }
 
@@ -385,5 +539,40 @@ func TestWriteHAProxyConfigCrtList(t *testing.T) {
 	}
 	if !strings.Contains(content, "/etc/haproxy/certs/b.com.pem b.com") {
 		t.Errorf("crt-list missing b.com entry:\n%s", content)
+	}
+}
+
+func TestWriteHAProxyConfigSkipsUnsafeDomain(t *testing.T) {
+	dir := t.TempDir()
+	localStore := t.TempDir()
+
+	d := filepath.Join(localStore, "ok.com")
+	if err := os.MkdirAll(d, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(d, CERT_EXT), []byte("CERT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, KEY_EXT), []byte("KEY"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newMockStore()
+	store.index.CertIndex["ok.com"] = certcloset.CertificateEntry{Domain: "ok.com"}
+	store.index.CertIndex["../evil"] = certcloset.CertificateEntry{Domain: "../evil"}
+	a := &App{closet: store}
+
+	cfg := SyncConfig{}
+	cfg.Traefik.LocalStore = localStore
+	cfg.HAProxy.CertDir = dir
+
+	if err := a.writeHAProxyConfig(cfg); err != nil {
+		t.Fatalf("writeHAProxyConfig: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ok.com.pem")); err != nil {
+		t.Fatalf("expected safe bundle: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "..", "evil.pem")); err == nil {
+		t.Fatal("unsafe bundle path should not be written")
 	}
 }

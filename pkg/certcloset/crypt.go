@@ -12,7 +12,7 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 )
 
-// I don't know anything about encryption, so it might be a good idea to look at the code haha.
+var gcmEnvelopeMagic = []byte("TAS3G1")
 
 // PKCS#7 Padding
 func padPKCS7(data []byte, blockSize int) []byte {
@@ -42,44 +42,71 @@ func encryptAES(key []byte, text []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unable to create AES cipher: %w", err)
 	}
 
-	iv := make([]byte, aes.BlockSize)
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, fmt.Errorf("unable to generate IV: %w", err)
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create GCM cipher: %w", err)
 	}
 
-	text = padPKCS7(text, aes.BlockSize)
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("unable to generate nonce: %w", err)
+	}
 
-	ciphertext := make([]byte, len(text))
-	mode := cipher.NewCBCEncrypter(block, iv)
-	mode.CryptBlocks(ciphertext, text)
-
-	return append(iv, ciphertext...), nil
+	ciphertext := gcm.Seal(nil, nonce, text, nil)
+	out := make([]byte, 0, len(gcmEnvelopeMagic)+len(nonce)+len(ciphertext))
+	out = append(out, gcmEnvelopeMagic...)
+	out = append(out, nonce...)
+	out = append(out, ciphertext...)
+	return out, nil
 }
 
 func decryptAES(key []byte, text []byte) ([]byte, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("the key length must be 32 bytes")
 	}
+	if len(text) >= len(gcmEnvelopeMagic) && bytes.Equal(text[:len(gcmEnvelopeMagic)], gcmEnvelopeMagic) {
+		return decryptAESGCM(key, text[len(gcmEnvelopeMagic):])
+	}
+	return decryptAESLegacyCBC(key, text)
+}
 
+func decryptAESGCM(key []byte, payload []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create AES cipher: %w", err)
 	}
 
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create GCM cipher: %w", err)
+	}
+	if len(payload) < gcm.NonceSize() {
+		return nil, fmt.Errorf("ciphertext is too short")
+	}
+	nonce := payload[:gcm.NonceSize()]
+	ciphertext := payload[gcm.NonceSize():]
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decrypt GCM ciphertext: %w", err)
+	}
+	return plain, nil
+}
+
+func decryptAESLegacyCBC(key []byte, text []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create AES cipher: %w", err)
+	}
 	if len(text) < aes.BlockSize {
 		return nil, fmt.Errorf("ciphertext is too short")
 	}
-
 	iv := text[:aes.BlockSize]
 	text = text[aes.BlockSize:]
-
 	if len(text)%aes.BlockSize != 0 {
 		return nil, fmt.Errorf("ciphertext is not a multiple of the block size")
 	}
-
 	mode := cipher.NewCBCDecrypter(block, iv)
 	mode.CryptBlocks(text, text)
-
 	return unpadPKCS7(text)
 }
 

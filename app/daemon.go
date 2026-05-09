@@ -72,7 +72,9 @@ func startMetricsServer(ctx context.Context, addr string, a *App) {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Warn().Err(err).Str("addr", addr).Msg("metrics server shutdown error")
+		}
 	}()
 	log.Info().Str("addr", addr).Msg("metrics server listening")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -119,7 +121,9 @@ func (a *App) startTriggerServer(ctx context.Context, dcfg DaemonConfig, token s
 			resp["last_sync"] = ls.Format(time.RFC3339)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Warn().Err(err).Msg("failed to encode /health response")
+		}
 	})
 
 	if dcfg.MetricsAddr == "" && a.metrics != nil {
@@ -131,7 +135,9 @@ func (a *App) startTriggerServer(ctx context.Context, dcfg DaemonConfig, token s
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Warn().Err(err).Str("addr", addr).Msg("HTTP trigger server shutdown error")
+		}
 	}()
 
 	log.Info().Str("addr", addr).Msg("HTTP trigger server listening")
@@ -167,10 +173,6 @@ func (a *App) startServers(ctx context.Context, dcfg DaemonConfig, token string,
 func (a *App) RunRenewDaemon(cfg RenewConfig) error {
 	if err := cfg.DaemonConfig.Validate(); err != nil {
 		return err
-	}
-	if cfg.Buckcert.UserKeyPath == "./le_user.json" {
-		return fmt.Errorf("daemon mode requires a persistent LETSENCRYPT_USER_KEY_PATH — " +
-			"default './le_user.json' is lost on container restart")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
