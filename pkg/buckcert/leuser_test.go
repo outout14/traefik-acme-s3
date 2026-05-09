@@ -1,12 +1,61 @@
 package buckcert
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 )
+
+type memoryUserStore struct {
+	data              []byte
+	exists            bool
+	forceAlreadyExist bool
+}
+
+func (m *memoryUserStore) LoadACMEUser() ([]byte, bool, error) {
+	if !m.exists {
+		return nil, false, nil
+	}
+	return append([]byte(nil), m.data...), true, nil
+}
+
+func (m *memoryUserStore) StoreACMEUser(data []byte) error {
+	m.data = append([]byte(nil), data...)
+	m.exists = true
+	return nil
+}
+
+func (m *memoryUserStore) StoreACMEUserIfNotExists(data []byte) (bool, error) {
+	if m.forceAlreadyExist || m.exists {
+		return false, nil
+	}
+	return true, m.StoreACMEUser(data)
+}
+
+type racingUserStore struct {
+	data      []byte
+	loadCount int
+}
+
+func (r *racingUserStore) LoadACMEUser() ([]byte, bool, error) {
+	r.loadCount++
+	if r.loadCount == 1 {
+		return nil, false, nil
+	}
+	return append([]byte(nil), r.data...), true, nil
+}
+
+func (r *racingUserStore) StoreACMEUser(data []byte) error {
+	r.data = append([]byte(nil), data...)
+	return nil
+}
+
+func (r *racingUserStore) StoreACMEUserIfNotExists(_ []byte) (bool, error) {
+	return false, nil
+}
 
 func TestCreateUserCreatesNew(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "user.json")
@@ -82,6 +131,125 @@ func TestLoadUserCorruptJSON(t *testing.T) {
 	_, err := LoadUser(path)
 	if err == nil {
 		t.Fatal("expected error for corrupt JSON")
+	}
+}
+
+func TestCreateUserDoesNotOverwriteCorruptExistingUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user.json")
+	if err := os.WriteFile(path, []byte("not json {{{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateUser("new@example.com", path); err == nil {
+		t.Fatal("expected corrupt existing user to fail")
+	}
+}
+
+func TestLoadOrCreateUserLoadsS3User(t *testing.T) {
+	u, err := newUser("s3@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := marshalUser(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryUserStore{data: data, exists: true}
+
+	got, err := LoadOrCreateUser(Config{
+		Email:       "ignored@example.com",
+		UserKeyPath: filepath.Join(t.TempDir(), "missing.json"),
+		UserStore:   store,
+	})
+	if err != nil {
+		t.Fatalf("LoadOrCreateUser: %v", err)
+	}
+	if got.Email != "s3@example.com" {
+		t.Fatalf("loaded S3 user email = %q", got.Email)
+	}
+}
+
+func TestLoadOrCreateUserImportsLocalUserToS3(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user.json")
+	u, err := newUser("local@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveUser(u, path); err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryUserStore{}
+
+	got, err := LoadOrCreateUser(Config{
+		Email:       "ignored@example.com",
+		UserKeyPath: path,
+		UserStore:   store,
+	})
+	if err != nil {
+		t.Fatalf("LoadOrCreateUser: %v", err)
+	}
+	if got.Email != "local@example.com" {
+		t.Fatalf("loaded local user email = %q", got.Email)
+	}
+
+	want, err := marshalUser(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(store.data, want) {
+		t.Fatal("local user was not stored in S3 store")
+	}
+}
+
+func TestLoadOrCreateUserCreatesAndStoresS3User(t *testing.T) {
+	store := &memoryUserStore{}
+
+	got, err := LoadOrCreateUser(Config{
+		Email:       "new-s3@example.com",
+		UserKeyPath: filepath.Join(t.TempDir(), "missing.json"),
+		UserStore:   store,
+	})
+	if err != nil {
+		t.Fatalf("LoadOrCreateUser: %v", err)
+	}
+	if got.Email != "new-s3@example.com" {
+		t.Fatalf("new user email = %q", got.Email)
+	}
+	if !store.exists || len(store.data) == 0 {
+		t.Fatal("new user was not stored in S3 store")
+	}
+}
+
+func TestLoadOrCreateUserReloadsConcurrentS3Winner(t *testing.T) {
+	winner, err := newUser("winner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := marshalUser(winner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &racingUserStore{data: data}
+
+	got, err := LoadOrCreateUser(Config{
+		Email:       "loser@example.com",
+		UserKeyPath: filepath.Join(t.TempDir(), "missing.json"),
+		UserStore:   store,
+	})
+	if err != nil {
+		t.Fatalf("LoadOrCreateUser: %v", err)
+	}
+	if got.Email != "winner@example.com" {
+		t.Fatalf("expected concurrent winner, got %q", got.Email)
+	}
+}
+
+func TestLoadUserInvalidKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user.json")
+	if err := os.WriteFile(path, []byte(`{"email":"bad@example.com","key":"not-pem"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUser(path); err == nil {
+		t.Fatal("expected invalid ACME user key to fail")
 	}
 }
 

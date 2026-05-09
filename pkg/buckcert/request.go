@@ -72,11 +72,15 @@ func (b *Buckcert) requestCertWithKeyAndProvider(domains []string, keyPEM []byte
 	}
 
 	cert, err := b.client.Certificate.ObtainForCSR(certificate.ObtainForCSRRequest{
-		CSR:    csr,
-		Bundle: true,
+		CSR:        csr,
+		PrivateKey: privateKey,
+		Bundle:     true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("obtain certificate for %v: %w", domains, err)
+	}
+	if len(cert.PrivateKey) == 0 {
+		cert.PrivateKey = keyPEM
 	}
 	return cert, nil
 }

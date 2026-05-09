@@ -56,6 +56,7 @@ func (c *CertCloset) retrieveIndex() error {
 
 		return err
 	}
+	defer s3idx.Body.Close()
 
 	// Decode the index
 	err = json.NewDecoder(s3idx.Body).Decode(&c.index)

@@ -49,10 +49,16 @@ func (a *App) Renew(cfg RenewConfig) {
 	}
 
 	unique := make(map[string]struct{})
+	ignoredByConfig := make([]string, 0)
 	for _, domain := range cfg.Domains {
-		if _, skip := ignored[domain]; !skip {
-			unique[domain] = struct{}{}
+		if _, skip := ignored[domain]; skip {
+			ignoredByConfig = append(ignoredByConfig, domain)
+			continue
 		}
+		unique[domain] = struct{}{}
+	}
+	if len(ignoredByConfig) > 0 {
+		log.Info().Strs("domains", ignoredByConfig).Msg("Domains ignored by IGNORED_DOMAINS filter")
 	}
 
 	finalDomains := make([]string, 0, len(unique))
@@ -86,7 +92,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			log.Error().Err(err).Msg("Could not acquire distributed lock — skipping renew run")
 			return
 		}
+		stopLockRefresh := a.startLockRefresh()
 		defer a.state.ReleaseLock()
+		defer stopLockRefresh()
 	}
 
 	state, err := a.loadFailureState()
@@ -108,9 +116,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 		baseDomain := strings.TrimPrefix(domain, "*.")
 		isWildcard := domain != baseDomain
 
-		if a.isInBackoff(state, domain, cfg.FailureBackoffMinutes) {
-			log.Debug().Str("domain", domain).Int("backoff_min", cfg.FailureBackoffMinutes).
-				Msg("Skipping domain in failure backoff")
+		if !cfg.ForceRenewOnFailure && a.isInBackoff(state, domain, cfg.FailureBackoffMinutes) {
+			log.Info().Str("domain", domain).Int("backoff_min", cfg.FailureBackoffMinutes).
+				Msg("Domain ignored because it is in failure backoff")
 			continue
 		}
 
@@ -120,7 +128,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			if err != nil {
 				log.Error().Err(err).Str("domain", domain).Msg("Failed to load rollover state")
 				a.recordFailure(state, domain)
-				_ = a.saveFailureState(state)
+				if saveErr := a.saveFailureState(state); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+				}
 				if a.metrics != nil {
 					a.metrics.renewTotal.WithLabelValues(domain, "fail").Inc()
 				}
@@ -131,7 +141,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 				if err := a.advanceRollover(domain, baseDomain, rollover, cfg, &renewed); err != nil {
 					log.Error().Err(err).Str("domain", domain).Msg("Failed to advance rollover")
 					a.recordFailure(state, domain)
-					_ = a.saveFailureState(state)
+					if saveErr := a.saveFailureState(state); saveErr != nil {
+						log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+					}
 					if a.metrics != nil {
 						a.metrics.renewTotal.WithLabelValues(domain, "fail").Inc()
 					}
@@ -154,12 +166,16 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			if existsInS3 {
 				log.Info().Str("domain", domain).Msg("Certificate already obtained and still valid")
 				a.clearFailure(state, domain)
-				_ = a.saveFailureState(state)
+				if saveErr := a.saveFailureState(state); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+				}
 				continue
 			}
 			log.Warn().Str("domain", domain).Msg("Certificate in index but missing in S3 — removing stale entry")
 			a.closet.RemoveFromIndex(domain)
-			_ = a.closet.SaveIndex()
+			if saveErr := a.closet.SaveIndex(); saveErr != nil {
+				log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to save index after removing stale entry")
+			}
 			if a.metrics != nil {
 				a.metrics.removeDomain(domain)
 			}
@@ -180,7 +196,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			if err := a.startRollover(domain, baseDomain, cfg); err != nil {
 				log.Error().Err(err).Str("domain", domain).Msg("Failed to start TLSA rollover")
 				a.recordFailure(state, domain)
-				_ = a.saveFailureState(state)
+				if saveErr := a.saveFailureState(state); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+				}
 				if a.metrics != nil {
 					a.metrics.renewTotal.WithLabelValues(domain, "fail").Inc()
 				}
@@ -192,7 +210,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 				log.Error().Err(err).Str("domain", domain).Str("event", "cert_request_failed").
 					Msg("Failed to request certificate")
 				a.recordFailure(state, domain)
-				_ = a.saveFailureState(state)
+				if saveErr := a.saveFailureState(state); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+				}
 				if a.metrics != nil {
 					a.metrics.renewTotal.WithLabelValues(domain, "fail").Inc()
 				}
@@ -206,7 +226,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 				log.Error().Err(err).Str("domain", domain).Str("event", "cert_store_failed").
 					Msg("Failed to store certificate")
 				a.recordFailure(state, domain)
-				_ = a.saveFailureState(state)
+				if saveErr := a.saveFailureState(state); saveErr != nil {
+					log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+				}
 				if a.metrics != nil {
 					a.metrics.renewTotal.WithLabelValues(domain, "fail").Inc()
 				}
@@ -222,7 +244,9 @@ func (a *App) renew(cfg RenewConfig, domains []string) {
 			}
 
 			a.clearFailure(state, domain)
-			_ = a.saveFailureState(state)
+			if saveErr := a.saveFailureState(state); saveErr != nil {
+				log.Error().Err(saveErr).Str("domain", domain).Msg("Failed to persist failure state")
+			}
 			if a.metrics != nil {
 				a.metrics.renewTotal.WithLabelValues(domain, "ok").Inc()
 			}
@@ -310,7 +334,9 @@ func (a *App) advanceRollover(domain, baseDomain string, rollover *certcloset.Ro
 		if _, err := a.state.LoadPendingKey(domain); err != nil {
 			log.Error().Err(err).Str("domain", domain).
 				Msg("Rollover inconsistent: pending key missing — resetting rollover state")
-			_ = a.state.DeleteRolloverState(domain)
+			if delErr := a.state.DeleteRolloverState(domain); delErr != nil {
+				log.Error().Err(delErr).Str("domain", domain).Msg("Failed to delete inconsistent rollover state")
+			}
 			return nil
 		}
 
@@ -381,7 +407,9 @@ func (a *App) advanceRollover(domain, baseDomain string, rollover *certcloset.Ro
 					Msg("RemoveTLSA failed repeatedly and rollover is ancient — forcing cleanup")
 			}
 		}
-		_ = a.state.DeletePendingKey(domain)
+		if err := a.state.DeletePendingKey(domain); err != nil {
+			log.Error().Err(err).Str("domain", domain).Msg("Failed to delete pending key")
+		}
 		if err := a.state.DeleteRolloverState(domain); err != nil {
 			return fmt.Errorf("delete rollover state: %w", err)
 		}

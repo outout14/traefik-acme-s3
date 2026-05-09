@@ -1,21 +1,20 @@
 EXTENSION ?= 
 DIST_DIR ?= dist/
 GOOS ?= linux
-ARCH ?= $(shell uname -m)
+ARCH ?= x86_64
 BUILDINFOSDET ?= 
 IMAGE ?= tracs3:latest
 
-SOFT_NAME    := trac3
-SOFT_VERSION := $(shell git describe --tags $(git rev-list --tags --max-count=1))
-VERSION_PKG   := $(shell echo $(SOFT_VERSION) | sed 's/^v//g')
-ARCH          := x86_64
+SOFT_NAME    := tracs3
+SOFT_VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo dev)
+VERSION_PKG   = $(shell echo $(SOFT_VERSION) | sed 's/^v//g')
 LICENSE       := AGPL-3
-URL           := https://github.com/outout14/trac3-dns/
-DESCRIPTION   := trac3 is a DNS authoritative nameserver made in Go
-BUILDINFOS    :=  ($(shell date +%FT%T%z)$(BUILDINFOSDET))
-LDFLAGS       := '-X main.version=$(SOFT_VERSION) -X main.buildinfos=$(BUILDINFOS)'
+URL           := https://github.com/outout14/traefik-acme-s3/
+DESCRIPTION   := traefik-acme-s3 manages ACME certificates in S3
+BUILDINFOS     =  ($(shell date +%FT%T%z)$(BUILDINFOSDET))
+LDFLAGS        = '-X main.version=$(SOFT_VERSION) -X main.buildinfos=$(BUILDINFOS)'
 
-OUTPUT_SOFT := $(DIST_DIR)trac3-$(SOFT_VERSION)-$(GOOS)-$(ARCH)$(EXTENSION)
+OUTPUT_SOFT = $(DIST_DIR)$(SOFT_NAME)-$(SOFT_VERSION)-$(GOOS)-$(ARCH)$(EXTENSION)
 
 .PHONY: vet
 vet:

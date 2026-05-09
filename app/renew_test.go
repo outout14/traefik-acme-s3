@@ -77,6 +77,7 @@ func newMockStateStore() *mockStateStore {
 }
 
 func (m *mockStateStore) AcquireLock() error { return nil }
+func (m *mockStateStore) RefreshLock() error { return nil }
 func (m *mockStateStore) ReleaseLock()       {}
 
 func (m *mockStateStore) LoadFailureState() (*certcloset.FailureState, error) {
@@ -144,11 +145,11 @@ func (m *mockRequester) RequestCertWithKey(_ []string, _ []byte) (*certificate.R
 // ---------- DNS updater mock ----------
 
 type mockDNSUpdater struct {
-	calls        []string // domains UpdateDNS was called with
-	err          error
-	enabledFn    func(domain string) bool
-	addTLSACalls []string
-	remTLSACalls []string
+	calls          []string // domains UpdateDNS was called with
+	err            error
+	enabledFn      func(domain string) bool
+	addTLSACalls   []string
+	remTLSACalls   []string
 	updateCAACalls []string
 }
 
@@ -353,6 +354,28 @@ func TestRenewDomainInBackoff(t *testing.T) {
 
 	if req.calls != 0 {
 		t.Fatalf("domain in backoff must be skipped, got %d request(s)", req.calls)
+	}
+}
+
+func TestRenewDomainInBackoffForced(t *testing.T) {
+	st := newMockStateStore()
+	st.failureState.LastFailure["backoff.com"] = time.Now().Format(time.RFC3339)
+
+	req := &mockRequester{cert: fakeCert("backoff.com")}
+	a := &App{
+		closet:   newMockStore(),
+		buckcert: req,
+		state:    st,
+	}
+
+	cfg := renewCfg()
+	cfg.FailureBackoffMinutes = 60
+	cfg.ForceRenewOnFailure = true
+
+	a.renew(cfg, []string{"backoff.com"})
+
+	if req.calls != 1 {
+		t.Fatalf("forced renew must bypass backoff, got %d request(s)", req.calls)
 	}
 }
 

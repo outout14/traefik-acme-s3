@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -62,6 +63,16 @@ func notFoundErr() error {
 	}
 }
 
+func preconditionErr() error {
+	return &awshttp.ResponseError{
+		ResponseError: &smithyhttp.ResponseError{
+			Response: &smithyhttp.Response{
+				Response: &http.Response{StatusCode: http.StatusPreconditionFailed},
+			},
+		},
+	}
+}
+
 func (m *mockS3) HeadBucket(_ context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
 	return &s3.HeadBucketOutput{}, nil
 }
@@ -82,6 +93,11 @@ func (m *mockS3) PutObject(_ context.Context, params *s3.PutObjectInput, _ ...fu
 	data, err := io.ReadAll(params.Body)
 	if err != nil {
 		return nil, err
+	}
+	if params.IfNoneMatch != nil && *params.IfNoneMatch == "*" {
+		if _, exists := m.objects[*params.Key]; exists {
+			return nil, preconditionErr()
+		}
 	}
 	m.objects[*params.Key] = data
 	m.putCalls++
@@ -415,6 +431,80 @@ func TestAcquireLockRejectsActiveLock(t *testing.T) {
 	c.ReleaseLock()
 }
 
+func TestAcquireLockRejectsActiveLockFromAnotherInstance(t *testing.T) {
+	c1 := newTestCloset(t, false)
+	if err := c1.AcquireLock(); err != nil {
+		t.Fatalf("first AcquireLock: %v", err)
+	}
+	defer c1.ReleaseLock()
+
+	c2 := &CertCloset{config: c1.config, s3: c1.s3}
+	if err := c2.retrieveIndex(); err != nil {
+		t.Fatalf("retrieveIndex: %v", err)
+	}
+	if err := c2.AcquireLock(); err == nil {
+		t.Fatal("second instance must not acquire an active lock")
+	}
+}
+
+func TestRefreshLockExtendsExpiry(t *testing.T) {
+	c := newTestCloset(t, false)
+	if err := c.AcquireLock(); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	mock := c.s3.(*mockS3)
+
+	mock.mu.Lock()
+	var rec lockRecord
+	if err := json.Unmarshal(mock.objects[lockKey], &rec); err != nil {
+		mock.mu.Unlock()
+		t.Fatalf("unmarshal lock: %v", err)
+	}
+	rec.ExpiresAt = time.Now().Add(time.Minute)
+	data, _ := json.Marshal(&rec)
+	mock.objects[lockKey] = data
+	mock.mu.Unlock()
+
+	if err := c.RefreshLock(); err != nil {
+		t.Fatalf("RefreshLock: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if err := json.Unmarshal(mock.objects[lockKey], &rec); err != nil {
+		t.Fatalf("unmarshal refreshed lock: %v", err)
+	}
+	if time.Until(rec.ExpiresAt) < 4*time.Minute {
+		t.Fatalf("RefreshLock did not extend expiry enough: %v", rec.ExpiresAt)
+	}
+}
+
+func TestReleaseLockDoesNotDeleteForeignLock(t *testing.T) {
+	c := newTestCloset(t, false)
+	if err := c.AcquireLock(); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	mock := c.s3.(*mockS3)
+
+	foreign, _ := json.Marshal(&lockRecord{
+		Hostname:   "other",
+		OwnerID:    "foreign-token",
+		AcquiredAt: time.Now(),
+		ExpiresAt:  time.Now().Add(lockTTL),
+	})
+	mock.mu.Lock()
+	mock.objects[lockKey] = foreign
+	mock.mu.Unlock()
+
+	c.ReleaseLock()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if _, ok := mock.objects[lockKey]; !ok {
+		t.Fatal("ReleaseLock must not delete a lock owned by another instance")
+	}
+}
+
 func TestCertificateExistsS3Error(t *testing.T) {
 	c := newTestCloset(t, false)
 	mock := c.s3.(*mockS3)
@@ -432,5 +522,45 @@ func TestCertificateExistsS3Error(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("exists must be false when S3 returns an error")
+	}
+}
+
+func TestACMEUserEncryptedS3RoundTrip(t *testing.T) {
+	c := newTestCloset(t, false)
+	mock := c.s3.(*mockS3)
+	plain := []byte(`{"email":"admin@example.com","key":"secret-key"}`)
+
+	stored, err := c.StoreACMEUserIfNotExists(plain)
+	if err != nil {
+		t.Fatalf("StoreACMEUserIfNotExists: %v", err)
+	}
+	if !stored {
+		t.Fatal("first StoreACMEUserIfNotExists must store")
+	}
+
+	mock.mu.Lock()
+	encrypted := append([]byte(nil), mock.objects[acmeUserKey]...)
+	mock.mu.Unlock()
+	if bytes.Contains(encrypted, []byte("secret-key")) {
+		t.Fatal("ACME user must be encrypted in S3")
+	}
+
+	got, exists, err := c.LoadACMEUser()
+	if err != nil {
+		t.Fatalf("LoadACMEUser: %v", err)
+	}
+	if !exists {
+		t.Fatal("ACME user must exist")
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatalf("ACME user mismatch: %q", got)
+	}
+
+	stored, err = c.StoreACMEUserIfNotExists([]byte(`{"different":true}`))
+	if err != nil {
+		t.Fatalf("second StoreACMEUserIfNotExists: %v", err)
+	}
+	if stored {
+		t.Fatal("second StoreACMEUserIfNotExists must not overwrite")
 	}
 }

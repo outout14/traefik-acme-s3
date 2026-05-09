@@ -71,10 +71,16 @@ func TestLocalCertClosetCheckIntegrityAllPresent(t *testing.T) {
 		t.Fatalf("NewLocalCertCloset: %v", err)
 	}
 
-	// Create directory for the cert (CheckIntegrity stats domain path)
+	// Create cert and key files for the cert domain.
 	certDir := filepath.Join(dir, "ok.com")
 	if err := os.MkdirAll(certDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, localCertFile), []byte("CERT"), 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, localKeyFile), []byte("KEY"), 0644); err != nil {
+		t.Fatalf("write key: %v", err)
 	}
 	lc.GetIndex().Add(CertificateEntry{Domain: "ok.com", ExpirationDate: time.Now()})
 
@@ -84,19 +90,25 @@ func TestLocalCertClosetCheckIntegrityAllPresent(t *testing.T) {
 	}
 }
 
-func TestLocalCertClosetSetIndex(t *testing.T) {
+func TestLocalCertClosetCheckIntegrityMissingKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	lc, err := NewLocalCertCloset(Config{}, dir)
 	if err != nil {
 		t.Fatalf("NewLocalCertCloset: %v", err)
 	}
 
-	newIdx := &CertificateList{CertIndex: map[string]CertificateEntry{
-		"set.com": {Domain: "set.com", ExpirationDate: time.Now()},
-	}}
-	lc.SetIndex(newIdx)
-	if lc.GetIndex() != newIdx {
-		t.Fatal("SetIndex did not replace the index pointer")
+	certDir := filepath.Join(dir, "missing-key.com")
+	if err := os.MkdirAll(certDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, localCertFile), []byte("CERT"), 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+
+	lc.GetIndex().Add(CertificateEntry{Domain: "missing-key.com", ExpirationDate: time.Now()})
+	failed := lc.CheckIntegrity()
+	if len(failed) != 1 || failed[0].Domain != "missing-key.com" {
+		t.Fatalf("want 1 integrity failure for missing-key.com, got %v", failed)
 	}
 }
 

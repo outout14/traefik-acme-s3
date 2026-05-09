@@ -35,11 +35,12 @@ type s3API interface {
 }
 
 type CertCloset struct {
-	mu     sync.Mutex
-	index  CertificateList
-	config Config
-	s3     s3API
-	dirty  bool
+	mu        sync.Mutex
+	index     CertificateList
+	config    Config
+	s3        s3API
+	dirty     bool
+	lockToken string
 }
 
 // initS3 initializes the AWS S3 client and validates bucket access.

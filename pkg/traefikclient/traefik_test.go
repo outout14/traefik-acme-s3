@@ -43,3 +43,14 @@ func TestParseRuleSubdomain(t *testing.T) {
 		t.Errorf("want %q got %q", "api.example.com", got)
 	}
 }
+
+func TestParseDomainsMultipleHosts(t *testing.T) {
+	r := TraefikRouter{Rule: `Host("a.example.com","b.example.com")`}
+	got := r.ParseDomains()
+	if len(got) != 2 {
+		t.Fatalf("want 2 domains got %d: %v", len(got), got)
+	}
+	if got[0] != "a.example.com" || got[1] != "b.example.com" {
+		t.Fatalf("unexpected domains: %v", got)
+	}
+}

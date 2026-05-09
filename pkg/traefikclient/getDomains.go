@@ -8,6 +8,7 @@ import (
 
 func (c *ApiClient) GetDomains() ([]string, error) {
 	var domains []string
+	seen := make(map[string]struct{})
 
 	resp, err := c.makeRequest("api/http/routers")
 	if err != nil {
@@ -25,8 +26,12 @@ func (c *ApiClient) GetDomains() ([]string, error) {
 	}
 
 	for _, router := range routers {
-		if router.ParseRule() != "" {
-			domains = append(domains, router.ParseRule())
+		for _, domain := range parseRuleDomains(router.Rule) {
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			domains = append(domains, domain)
 		}
 	}
 

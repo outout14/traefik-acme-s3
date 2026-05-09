@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"unicode"
 )
 
 type LocalCertCloset struct {
@@ -11,10 +14,37 @@ type LocalCertCloset struct {
 	path  string
 }
 
+const (
+	localCertFile = "cert.pem"
+	localKeyFile  = "key.pem"
+)
+
+func isSafeLocalDomainPathSegment(domain string) bool {
+	if domain == "" || filepath.IsAbs(domain) {
+		return false
+	}
+	if strings.Contains(domain, "..") {
+		return false
+	}
+	if strings.Contains(domain, "/") || strings.Contains(domain, "\\") {
+		return false
+	}
+	for _, r := range domain {
+		if r == 0 || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // NewLocalCertCloset constructs a LocalCertCloset pointing to the
 // provided filesystem `path`. It ensures the certificate index file
 // exists (creating it if necessary) and loads the index into memory.
 func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return nil, fmt.Errorf("unable to create local closet path: %w", err)
+	}
+
 	cg := LocalCertCloset{
 		path:  path,
 		index: &CertificateList{CertIndex: make(map[string]CertificateEntry)},
@@ -30,10 +60,6 @@ func NewLocalCertCloset(config Config, path string) (*LocalCertCloset, error) {
 		return nil, err
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("local closet path does not exist: %w", err)
-	}
-
 	return &cg, nil
 }
 
@@ -45,7 +71,17 @@ func (c *LocalCertCloset) CheckIntegrity() []*CertificateEntry {
 	var failed []*CertificateEntry
 
 	for _, cert := range c.index.CertIndex {
-		if _, err := os.Stat(c.path + "/" + cert.Domain); os.IsNotExist(err) {
+		if !isSafeLocalDomainPathSegment(cert.Domain) {
+			failed = append(failed, &cert)
+			continue
+		}
+		certPath := filepath.Join(c.path, cert.Domain, localCertFile)
+		keyPath := filepath.Join(c.path, cert.Domain, localKeyFile)
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			failed = append(failed, &cert)
+			continue
+		}
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
 			failed = append(failed, &cert)
 		}
 	}
@@ -78,12 +114,6 @@ func (c *LocalCertCloset) retrieveIdx() error {
 // LocalCertCloset.
 func (c *LocalCertCloset) GetIndex() *CertificateList {
 	return c.index
-}
-
-// SetIndex replaces the LocalCertCloset's in-memory index with the
-// provided CertificateList pointer.
-func (c *LocalCertCloset) SetIndex(idx *CertificateList) {
-	c.index = idx
 }
 
 // SaveIndex marshals the in-memory index and writes it to disk at the

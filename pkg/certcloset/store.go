@@ -29,8 +29,12 @@ func expiryFromCertPEM(certPEM []byte) time.Time {
 
 // IsErrNotFound returns true if the error indicates the S3 object does not exist (404).
 func IsErrNotFound(err error) bool {
+	return isErrHTTPStatus(err, http.StatusNotFound)
+}
+
+func isErrHTTPStatus(err error, status int) bool {
 	var responseError *awshttp.ResponseError
-	return errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound
+	return errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == status
 }
 
 // StoreCertificate serializes a certificate.Resource and stores it in
@@ -87,6 +91,7 @@ func (c *CertCloset) RetrieveCertificate(domain string) (*Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve certificate from S3: %w", err)
 	}
+	defer s3cert.Body.Close()
 
 	// Unmarshal the certificate
 	var cert Certificate
