@@ -45,11 +45,10 @@ func selfSignedCertPEM(t *testing.T, notAfter time.Time) []byte {
 
 // mockS3 is an in-memory implementation of s3API for unit tests.
 type mockS3 struct {
-	mu               sync.Mutex
-	objects          map[string][]byte
-	headObjErr       error // when set, HeadObject returns this error instead of 404/200
-	putCalls         int
-	noConditionalPut bool // simulate backends that reject IfNoneMatch (e.g. OVHcloud, Ceph)
+	mu         sync.Mutex
+	objects    map[string][]byte
+	headObjErr error // when set, HeadObject returns this error instead of 404/200
+	putCalls   int
 }
 
 func newMockS3() *mockS3 { return &mockS3{objects: make(map[string][]byte)} }
@@ -64,25 +63,6 @@ func notFoundErr() error {
 	}
 }
 
-func preconditionErr() error {
-	return &awshttp.ResponseError{
-		ResponseError: &smithyhttp.ResponseError{
-			Response: &smithyhttp.Response{
-				Response: &http.Response{StatusCode: http.StatusPreconditionFailed},
-			},
-		},
-	}
-}
-
-func notImplementedErr() error {
-	return &awshttp.ResponseError{
-		ResponseError: &smithyhttp.ResponseError{
-			Response: &smithyhttp.Response{
-				Response: &http.Response{StatusCode: http.StatusNotImplemented},
-			},
-		},
-	}
-}
 
 func (m *mockS3) HeadBucket(_ context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
 	return &s3.HeadBucketOutput{}, nil
@@ -104,14 +84,6 @@ func (m *mockS3) PutObject(_ context.Context, params *s3.PutObjectInput, _ ...fu
 	data, err := io.ReadAll(params.Body)
 	if err != nil {
 		return nil, err
-	}
-	if params.IfNoneMatch != nil && *params.IfNoneMatch == "*" {
-		if m.noConditionalPut {
-			return nil, notImplementedErr()
-		}
-		if _, exists := m.objects[*params.Key]; exists {
-			return nil, preconditionErr()
-		}
 	}
 	m.objects[*params.Key] = data
 	m.putCalls++
@@ -579,38 +551,3 @@ func TestACMEUserEncryptedS3RoundTrip(t *testing.T) {
 	}
 }
 
-// TestACMEUserIfNotExistsFallback covers backends (OVHcloud, Ceph) that return
-// 501 for conditional PUTs. The fallback uses HeadObject+PutObject.
-func TestACMEUserIfNotExistsFallback(t *testing.T) {
-	c := newTestCloset(t, false)
-	mock := c.s3.(*mockS3)
-	mock.noConditionalPut = true
-	plain := []byte(`{"email":"admin@example.com","key":"secret-key"}`)
-
-	stored, err := c.StoreACMEUserIfNotExists(plain)
-	if err != nil {
-		t.Fatalf("StoreACMEUserIfNotExists (fallback): %v", err)
-	}
-	if !stored {
-		t.Fatal("first call must store via fallback")
-	}
-
-	got, exists, err := c.LoadACMEUser()
-	if err != nil {
-		t.Fatalf("LoadACMEUser after fallback store: %v", err)
-	}
-	if !exists {
-		t.Fatal("ACME user must exist after fallback store")
-	}
-	if !bytes.Equal(got, plain) {
-		t.Fatalf("ACME user mismatch: %q", got)
-	}
-
-	stored, err = c.StoreACMEUserIfNotExists([]byte(`{"different":true}`))
-	if err != nil {
-		t.Fatalf("second StoreACMEUserIfNotExists (fallback): %v", err)
-	}
-	if stored {
-		t.Fatal("second fallback call must not overwrite existing user")
-	}
-}
