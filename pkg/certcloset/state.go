@@ -137,6 +137,36 @@ func (c *CertCloset) StoreACMEUserIfNotExists(data []byte) (bool, error) {
 		if isErrHTTPStatus(err, http.StatusConflict) || isErrHTTPStatus(err, http.StatusPreconditionFailed) {
 			return false, nil
 		}
+		// S3-compatible backends (e.g. Ceph/RadosGW) may not support conditional
+		// PUTs. Fall back to HeadObject+PutObject; the race window is acceptable
+		// because the ACME user is created only once.
+		if isErrHTTPStatus(err, http.StatusNotImplemented) {
+			return c.storeACMEUserIfNotExistsFallback(encrypted)
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// storeACMEUserIfNotExistsFallback is used when the S3 backend does not support
+// conditional PUTs. It checks for object existence with HeadObject first.
+func (c *CertCloset) storeACMEUserIfNotExistsFallback(encrypted []byte) (bool, error) {
+	_, err := c.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    strPtr(acmeUserKey),
+	})
+	if err == nil {
+		return false, nil
+	}
+	if !IsErrNotFound(err) {
+		return false, fmt.Errorf("check ACME user existence: %w", err)
+	}
+	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &c.config.Bucket,
+		Key:    strPtr(acmeUserKey),
+		Body:   bytes.NewReader(encrypted),
+	})
+	if err != nil {
 		return false, err
 	}
 	return true, nil
