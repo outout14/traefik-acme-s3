@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -121,37 +120,15 @@ func (c *CertCloset) StoreACMEUser(data []byte) error {
 }
 
 // StoreACMEUserIfNotExists encrypts and writes the ACME user only when no S3
-// object exists yet. It returns stored=false if another instance won the race.
+// object exists yet. Returns stored=false if the object already exists.
+// Uses HeadObject+PutObject; the TOCTOU race window is acceptable because the
+// ACME user is written only once.
 func (c *CertCloset) StoreACMEUserIfNotExists(data []byte) (bool, error) {
 	encrypted, err := encryptAES(c.deriveKey(), data)
 	if err != nil {
 		return false, fmt.Errorf("encrypt ACME user: %w", err)
 	}
-	_, err = c.s3.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket:      &c.config.Bucket,
-		Key:         strPtr(acmeUserKey),
-		Body:        bytes.NewReader(encrypted),
-		IfNoneMatch: strPtr("*"),
-	})
-	if err != nil {
-		if isErrHTTPStatus(err, http.StatusConflict) || isErrHTTPStatus(err, http.StatusPreconditionFailed) {
-			return false, nil
-		}
-		// S3-compatible backends (e.g. Ceph/RadosGW) may not support conditional
-		// PUTs. Fall back to HeadObject+PutObject; the race window is acceptable
-		// because the ACME user is created only once.
-		if isErrHTTPStatus(err, http.StatusNotImplemented) {
-			return c.storeACMEUserIfNotExistsFallback(encrypted)
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-// storeACMEUserIfNotExistsFallback is used when the S3 backend does not support
-// conditional PUTs. It checks for object existence with HeadObject first.
-func (c *CertCloset) storeACMEUserIfNotExistsFallback(encrypted []byte) (bool, error) {
-	_, err := c.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
+	_, err = c.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
 		Bucket: &c.config.Bucket,
 		Key:    strPtr(acmeUserKey),
 	})

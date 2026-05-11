@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"time"
 
@@ -74,26 +73,29 @@ func (c *CertCloset) loadLock(ctx context.Context) (*lockRecord, string, bool, e
 	return &rec, etag, true, nil
 }
 
-func (c *CertCloset) putLock(ctx context.Context, rec *lockRecord, etag string, requireMissing bool) error {
+func (c *CertCloset) putLock(ctx context.Context, rec *lockRecord, requireMissing bool) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("marshal lock: %w", err)
 	}
-	input := &s3.PutObjectInput{
+	if requireMissing {
+		_, headErr := c.s3.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: &c.config.Bucket,
+			Key:    strPtr(lockKey),
+		})
+		if headErr == nil {
+			return fmt.Errorf("lock changed while updating: lock appeared concurrently")
+		}
+		if !IsErrNotFound(headErr) {
+			return fmt.Errorf("write lock: %w", headErr)
+		}
+	}
+	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &c.config.Bucket,
 		Key:    strPtr(lockKey),
 		Body:   bytes.NewReader(data),
-	}
-	if requireMissing {
-		input.IfNoneMatch = strPtr("*")
-	} else if etag != "" {
-		input.IfMatch = &etag
-	}
-	_, err = c.s3.PutObject(ctx, input)
+	})
 	if err != nil {
-		if isErrHTTPStatus(err, http.StatusPreconditionFailed) || isErrHTTPStatus(err, http.StatusConflict) {
-			return fmt.Errorf("lock changed while updating: %w", err)
-		}
 		return fmt.Errorf("write lock: %w", err)
 	}
 	return nil
@@ -108,7 +110,7 @@ func (c *CertCloset) AcquireLock() error {
 	}
 
 	ctx := context.TODO()
-	rec, etag, exists, err := c.loadLock(ctx)
+	rec, _, exists, err := c.loadLock(ctx)
 	if err != nil {
 		return err
 	}
@@ -129,7 +131,7 @@ func (c *CertCloset) AcquireLock() error {
 		AcquiredAt: now,
 		ExpiresAt:  now.Add(lockTTL),
 	}
-	if err := c.putLock(ctx, newRec, etag, !exists); err != nil {
+	if err := c.putLock(ctx, newRec, !exists); err != nil {
 		return err
 	}
 	c.setLockToken(token)
@@ -144,7 +146,7 @@ func (c *CertCloset) RefreshLock() error {
 	}
 
 	ctx := context.TODO()
-	rec, etag, exists, err := c.loadLock(ctx)
+	rec, _, exists, err := c.loadLock(ctx)
 	if err != nil {
 		return err
 	}
@@ -155,7 +157,7 @@ func (c *CertCloset) RefreshLock() error {
 		return fmt.Errorf("lock is owned by another instance")
 	}
 	rec.ExpiresAt = time.Now().Add(lockTTL)
-	return c.putLock(ctx, rec, etag, false)
+	return c.putLock(ctx, rec, false)
 }
 
 // ReleaseLock removes the S3 lock object only if this process still owns it.
