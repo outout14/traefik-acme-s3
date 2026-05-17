@@ -98,6 +98,12 @@ func (c *CertCloset) GetIndex() *CertificateList {
 	return &c.index
 }
 
+// RefreshIndex re-fetches the certificate index from S3, replacing the in-memory copy.
+// Call at the start of each daemon tick so new certs added by renew are visible.
+func (c *CertCloset) RefreshIndex() error {
+	return c.retrieveIndex()
+}
+
 // s3PutWithRetry uploads data to S3 with up to 3 attempts and exponential backoff (2s/4s/8s).
 func (c *CertCloset) s3PutWithRetry(key string, data []byte) error {
 	backoff := 2 * time.Second

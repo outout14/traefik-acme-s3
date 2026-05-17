@@ -11,6 +11,7 @@ import (
 // certStore is the interface App uses for certificate storage.
 type certStore interface {
 	GetIndex() *certcloset.CertificateList
+	RefreshIndex() error
 	SaveIndex() error
 	StoreCertificate(cert certificate.Resource) error
 	RetrieveCertificate(domain string) (*certcloset.Certificate, error)

@@ -33,6 +33,7 @@ func newMockStore() *mockStore {
 }
 
 func (m *mockStore) GetIndex() *certcloset.CertificateList { return &m.index }
+func (m *mockStore) RefreshIndex() error                   { return nil }
 func (m *mockStore) SaveIndex() error {
 	m.saveIndexCalls++
 	return m.saveIndexErr

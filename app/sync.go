@@ -68,6 +68,9 @@ func (a *App) writeCertificate(basepath string, cert *certcloset.Certificate) er
 }
 
 func (a *App) syncCerts(cfg SyncConfig) error {
+	if err := a.closet.RefreshIndex(); err != nil {
+		return fmt.Errorf("failed to refresh remote index: %w", err)
+	}
 	localCloset, err := certcloset.NewLocalCertCloset(a.config.Closet, cfg.Traefik.LocalStore)
 	if err != nil {
 		return err
